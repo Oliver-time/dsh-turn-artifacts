@@ -32,7 +32,7 @@
 
 ```bash
 # 1) 装进 web profile（dsh plugin 的参数会转发给 profile 目录里的 pnpm）
-dsh plugin --profile web add github:<你的账号>/dsh-turn-artifacts
+dsh plugin --profile web add github:Oliver-time/dsh-turn-artifacts
 ```
 
 ```jsonc
@@ -218,7 +218,7 @@ test/                 自测与诊断脚本
 **Install.**
 
 ```bash
-dsh plugin --profile web add github:<you>/dsh-turn-artifacts
+dsh plugin --profile web add github:Oliver-time/dsh-turn-artifacts
 ```
 
 Then add `"dsh-turn-artifacts"` to `dsh.profile.bundles` in `~/.dsh/profiles/web/package.json` and restart `dsh web`. Listing the package as a profile bundle is what makes its own `cordis.patch.yml` bundle layer apply, which inserts the Loader row — no absolute path to edit by hand. Developing from an uninstalled checkout instead? Point the Loader row at the file with a `file://` URL (a bare Windows path is rejected with `Received protocol 'c:'`, which aborts the boot) and do **not** also add the package to the bundle list, or the two rows collide as a duplicate id.

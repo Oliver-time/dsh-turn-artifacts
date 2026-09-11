@@ -21,6 +21,14 @@
   "engines": {
     "node": ">=22"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Oliver-time/dsh-turn-artifacts.git"
+  },
+  "homepage": "https://github.com/Oliver-time/dsh-turn-artifacts#readme",
+  "bugs": {
+    "url": "https://github.com/Oliver-time/dsh-turn-artifacts/issues"
+  },
   "scripts": {
     "test": "node test/host.mjs && node test/harness.mjs"
   },
