@@ -1,0 +1,31 @@
+# dsh-turn-artifacts, as a bundle layer.
+#
+# This file is read when the package is listed in a profile's
+# `dsh.profile.bundles` (see README, "Install"): `dsh-app-boot` resolves each
+# listed bundle's `dsh.bundle.patch` and applies it to the plugin tree. Nothing
+# here needs editing per machine.
+#
+# `name` is the row's module specifier, and a bare package name is deliberate:
+# the Loader resolves it through the profile's own package resolution, so the
+# row works wherever the package was installed from — npm, a git URL, a tarball,
+# or a local `file:` dependency.
+#
+# Use a `file://` URL instead only for a checkout you have NOT installed, for
+# example while developing the plugin in place:
+#
+#     - insert:
+#         - id: turn-artifacts
+#           name: file:///C:/path/to/dsh-turn-artifacts/index.js
+#
+# A bare Windows path (`C:\path\to\...`) is rejected by the ESM loader with
+# `Received protocol 'c:'`, and that failure aborts the whole profile boot, so
+# always spell it as a `file://` URL.
+#
+# The profile's own `cordis.patch.yml` is applied after every bundle layer, so a
+# row added here can be disabled or re-pointed there by id:
+#
+#     - id: turn-artifacts
+#       disabled: true
+- insert:
+    - id: turn-artifacts
+      name: dsh-turn-artifacts

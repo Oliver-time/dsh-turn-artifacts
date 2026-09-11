@@ -1,0 +1,48 @@
+{
+  "name": "dsh-turn-artifacts",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Web GUI plugin with two independent jobs: it makes inline-code file mentions clickable when the file was produced indirectly by a terminal command (a python-pptx .pptx, a matplotlib .png, an ffmpeg .mp4) rather than by the write/edit tools; and it fills a Session's history window on open, so a fresh page load shows more than the newest 50 messages.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node test/host.mjs && node test/harness.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "client-plugin",
+    "deliverables",
+    "file-mentions",
+    "clickable-links",
+    "session",
+    "history",
+    "paging"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "client": {
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

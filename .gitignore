@@ -1,0 +1,17 @@
+# Editors and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Node
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# Local scratch: session-log diagnostics may dump decoded logs here
+*.jsonl
+*.log
+/tmp/
