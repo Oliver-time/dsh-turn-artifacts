@@ -1,6 +1,6 @@
 {
   "name": "dsh-turn-artifacts",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Web GUI plugin with two independent jobs: it makes inline-code file mentions clickable when the file was produced indirectly by a terminal command (a python-pptx .pptx, a matplotlib .png, an ffmpeg .mp4) rather than by the write/edit tools; and it fills a Session's history window on open, so a fresh page load shows more than the newest 50 messages.",
   "type": "module",
@@ -30,7 +30,7 @@
     "url": "https://github.com/Oliver-time/dsh-turn-artifacts/issues"
   },
   "scripts": {
-    "test": "node test/host.mjs && node test/harness.mjs"
+    "test": "node test/host.mjs && node test/autofill-off.mjs && node test/harness.mjs"
   },
   "keywords": [
     "dsh",

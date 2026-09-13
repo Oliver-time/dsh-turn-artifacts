@@ -600,52 +600,26 @@ check('history autofill stops on a stalled page and tolerates what it cannot pag
   assert.equal(broken.loadCalls, 0, 'no page is attempted after a failed open')
 })
 
-check('history autofill fills each opened session once, and disposal stops it', async () => {
+check('mounting the plugin starts no history fill at all', async () => {
+  // The fill is off by default: paging a multi-megabyte log back to its start on
+  // open made conversations render empty (see HISTORY_AUTOFILL_ENABLED in
+  // lib/client.js). `fillHistory` itself stays tested above as a pure function;
+  // what must never regress silently is `apply()` reaching for the session list.
   const sessions = fakeSessions({ s1: fakeSession('s1', 3), s2: fakeSession('s2', 2) })
   const ctx = autofillContext(sessions)
   exportsOf.apply(ctx)
 
   await settle()
-  assert.equal(sessions.sessions.get('s1').loadCalls, 3, 'the current session is filled on mount')
+  assert.equal(sessions.listenerCount(), 0, 'the plugin must not subscribe to the session list')
+  assert.equal(sessions.sessions.get('s1').loadCalls, 0, 'the current session is left alone')
 
   sessions.setCurrent('s2')
   await settle()
-  assert.equal(sessions.sessions.get('s2').loadCalls, 2, 'switching sessions fills the new one')
+  assert.equal(sessions.sessions.get('s2').loadCalls, 0, 'switching sessions pages nothing')
+  assert.equal(sessions.sessions.get('s2').openCalls ?? 0, 0, 'no session is opened by the plugin')
 
-  sessions.setCurrent('s1')
-  await settle()
-  assert.equal(sessions.sessions.get('s1').loadCalls, 3, 'returning to a filled session does not re-page it')
-
-  assert.equal(sessions.listenerCount(), 1, 'the plugin subscribes once')
   ctx.disposeAll()
-  assert.equal(sessions.listenerCount(), 0, 'disposal releases the subscription')
-  sessions.setCurrent('s2')
-  await settle()
-  assert.equal(sessions.sessions.get('s2').loadCalls, 2, 'a disposed plugin pages nothing')
-})
-
-check('history autofill retries a session whose fill could not start', async () => {
-  const sessions = fakeSessions({ s1: fakeSession('s1', 2) })
-  // A transport that is mid-reconnect: the first open rejects, then recovers.
-  const session = sessions.sessions.get('s1')
-  const realOpen = session.open
-  let attempts = 0
-  session.open = async () => {
-    attempts += 1
-    if (attempts === 1) throw new Error('offline')
-    await realOpen.call(session)
-  }
-  const ctx = autofillContext(sessions)
-  exportsOf.apply(ctx)
-
-  await settle()
-  assert.equal(session.loadCalls, 0, 'nothing is paged while the transport is down')
-
-  // Any later notification retries, because a failed fill was not remembered.
-  sessions.setCurrent('s1')
-  await settle()
-  assert.equal(session.loadCalls, 2, 'the recovered session is filled on the next change')
-  assert.equal(attempts, 2, 'the open was attempted twice')
+  assert.equal(sessions.listenerCount(), 0, 'disposal has nothing to release')
 })
 
 check('history autofill reaches a session through either lookup', async () => {
@@ -664,6 +638,57 @@ check('history autofill reaches a session through either lookup', async () => {
   const covered = fakeSessions({ s1: fakeSession('s1', 1) })
   covered.binding = () => undefined
   assert.equal(await exportsOf.fillHistory(covered, 's1', undefined), 1, 'an undefined binding falls back')
+})
+
+check('a window that opens mid-turn does not break the definition', () => {
+  // The regression that emptied whole transcripts. A session's loaded window can
+  // begin in the middle of a turn — the `turn/start` that would have seeded this
+  // definition's state sits outside the page — so `update` and
+  // `buildLocationData` both run with `state` still undefined. Reading
+  // `state.turn` there threw "Cannot read properties of undefined (reading
+  // 'turn')", which killed the session event feed and left the chat area blank.
+  // It showed up on big conversations only because a window is most likely to
+  // start mid-turn in a long log.
+  const definition = fakeContext()
+  exportsOf.apply(definition)
+  const artifactDefinition = definition.definition
+  assert.ok(artifactDefinition !== undefined, 'the definition must be registered')
+
+  const midTurnContext = {
+    key: 'turn-artifacts:7',
+    kind: 'turn-artifacts',
+    id: '7',
+    matches: [{ event: toolResult('call-x', 'wrote C:\\out\\deep\\report.pdf'), role: 'update', location: undefined }],
+    start: undefined,
+    state: undefined,
+    current: new Map(),
+  }
+
+  // update: an update-role match arriving before any seed must be tolerated.
+  assert.doesNotThrow(() => {
+    artifactDefinition.update(midTurnContext, midTurnContext.matches[0])
+  }, 'update must survive an undefined phase instead of throwing')
+
+  // buildLocationData: same guard, and it must publish nothing rather than
+  // guess a turn number the assembler would reject.
+  let data
+  assert.doesNotThrow(() => {
+    data = artifactDefinition.buildLocationData(midTurnContext, 'turn', null)
+  }, 'buildLocationData must survive an undefined state')
+  assert.equal(data, null, 'no turn number is available, so nothing is published')
+
+  // A location that does carry the turn still works, which is how a mid-turn
+  // window gets its artifacts published.
+  const withLocation = {
+    ...midTurnContext,
+    start: {
+      event: { type: 'turn/start', seq: 1, data: { turn: 7 } },
+      role: 'start',
+      location: { kind: 'turn', turn: 7 },
+    },
+  }
+  const published = artifactDefinition.buildLocationData(withLocation, 'turn', null)
+  assert.ok(published === null || published.kind === 'turn', 'a located turn either publishes or declines, never throws')
 })
 
 let failed = 0

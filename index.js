@@ -19,8 +19,8 @@
  * case this plugin exists for. So this half adds one paragraph covering it.
  *
  * That paragraph is a sibling of the shipped one, not a replacement. The prompt
- * registry merges scoped layers by name — a deeper scope shadows a global
- * section that shares its name — but a Loader row registers in the *global*
+ * registry merges scoped layers by name -- a deeper scope shadows a global
+ * section that shares its name --but a Loader row registers in the *global*
  * layer, where a duplicate name is a hard error:
  *
  *     prompt section "ui:deliverable-file-references" is already registered
@@ -34,8 +34,8 @@
  *
  * The artifact index, the mention resolver, the artifact chips, and the session
  * history fill all live in the browser half (`lib/client.js`), because the
- * evidence they need — the current turn's tool calls and results, and the
- * `sessions` service — is already client-visible. This file registers no tool and
+ * evidence they need -- the current turn's tool calls and results, and the
+ * `sessions` service --is already client-visible. This file registers no tool and
  * touches no model history.
  *
  * @module dsh-turn-artifacts
@@ -45,7 +45,7 @@
 export const PLUGIN_NAME = 'turn-artifacts'
 
 /** Plugin version, kept in step with package.json. */
-export const PLUGIN_VERSION = '0.3.0'
+export const PLUGIN_VERSION = '0.4.0'
 
 /**
  * Prompt section this half owns.
@@ -69,11 +69,11 @@ const FILE_REFERENCE_ORDER_OFFSET = 1
  * code. What it leaves out is exactly the case this plugin exists for: a binary
  * only a script produced is in nobody's mutation record, so the two things that
  * make it linkable are (a) naming it in the closing response, and (b) having
- * printed its path in a tool output at all — a path that never appeared anywhere
+ * printed its path in a tool output at all -- a path that never appeared anywhere
  * cannot be linked by any plugin.
  */
 export const FILE_REFERENCE_TEXT = [
-  'Files produced by a terminal command rather than by a file tool — a document, chart, archive, or clip written by a script — are deliverables too:',
+  'Files produced by a terminal command rather than by a file tool -- a document, chart, archive, or clip written by a script -- are deliverables too:',
   'name them in the final response the same way, as Markdown inline code, using the spelling the command reported.',
   'A reference can only become a link if the path appeared somewhere in this turn\'s tool output,',
   'so when a command produces something you intend to hand over, have it print that path (or at least the location and size) rather than finishing silently.',
