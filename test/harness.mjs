@@ -691,6 +691,42 @@ check('a window that opens mid-turn does not break the definition', () => {
   assert.ok(published === null || published.kind === 'turn', 'a located turn either publishes or declines, never throws')
 })
 
+check('the mention wrapper forwards every argument the view passes', () => {
+  // The shipped call grew a second parameter — `forClosing(owner, sessionId)` —
+  // when deliverables learned to open files as `dsh-resource://` addresses in the
+  // right Sidebar. A wrapper that named only `owner` handed the shipped resolver
+  // an undefined session, so the official vocabulary answered nothing: wrapping
+  // the service broke the very feature it extends. This pins the forwarding.
+  const ctx = fakeContext()
+  const seen = []
+  ctx.services.set('chatFileMentions', {
+    forClosing(...args) {
+      seen.push(args)
+      return { resolve: () => undefined }
+    },
+  })
+  exportsOf.apply(ctx)
+
+  const wrapped = ctx.services.get('chatFileMentions').forClosing
+  assert.notEqual(typeof wrapped, 'undefined')
+  const turnDataArg = { turn: { turn: 4242, data: { get: () => undefined } }, seq: 1, openFile: () => {} }
+  wrapped(turnDataArg, 'session-abc')
+
+  assert.equal(seen.length, 1, 'the shipped provider is still called')
+  assert.equal(seen[0].length, 2, 'both arguments arrive, not just the first')
+  assert.equal(seen[0][0], turnDataArg, 'the owner is forwarded by identity')
+  assert.equal(seen[0][1], 'session-abc', 'the sessionId is forwarded unchanged')
+
+  // A provider that takes one argument must keep working, and a malformed owner
+  // must not throw out of the wrapper.
+  const oneArg = fakeContext()
+  oneArg.services.set('chatFileMentions', { forClosing: (only) => ({ resolve: () => undefined, only }) })
+  exportsOf.apply(oneArg)
+  assert.doesNotThrow(() => oneArg.services.get('chatFileMentions').forClosing(turnDataArg, 's'))
+  assert.doesNotThrow(() => oneArg.services.get('chatFileMentions').forClosing(undefined, 's'))
+  assert.doesNotThrow(() => oneArg.services.get('chatFileMentions').forClosing({}, 's'))
+})
+
 let failed = 0
 for (const { name, fn } of checks) {
   opened.length = 0
