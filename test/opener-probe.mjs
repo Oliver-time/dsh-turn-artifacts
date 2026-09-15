@@ -12,6 +12,7 @@
  */
 
 import { execFile } from 'node:child_process'
+import { dshModuleUrl } from './dsh-paths.mjs'
 
 const target = process.argv[2]
 if (target === undefined) {
@@ -19,9 +20,7 @@ if (target === undefined) {
   process.exit(2)
 }
 
-const nativeCommand = await import(
-  'file:///C:/Users/LIU/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-native-command/lib/index.js'
-)
+const nativeCommand = await import(dshModuleUrl('dsh-native-command', 'lib/index.js'))
 
 const run = (command, args) => new Promise((resolve) => {
   execFile(command, args, { encoding: 'utf8', windowsHide: true }, (error, stdout, stderr) => {

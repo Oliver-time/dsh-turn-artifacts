@@ -29,15 +29,15 @@ const exported = registration.factory((spec) => {
   throw new Error(`unexpected require(${spec})`)
 })
 
-const pptx = 'C:\\Users\\LIU\\Desktop\\lyh_robot\\_文档\\暑期汇报_20260909\\暑期科研汇报_正式流程图版_甘雨模板_5分钟版_v13.pptx'
+const pptx = 'C:\\work\\slides\\_文档\\暑期汇报_20260909\\暑期科研汇报_正式流程图版_甘雨模板_5分钟版_v13.pptx'
 const samples = [
   JSON.stringify({ written: pptx, chart: '_文档\\暑期汇报_20260909\\assets\\_v13_overview.png' }),
   'chart -> assets/trend_v2.png (ok)',
   'python assets/polish_v13.py',
   'see _v13_overview.png and 暑期科研汇报_正式流程图版_甘雨模板_5分钟版_v13.pptx',
-  'interpreter C:\\Users\\LIU\\.local\\bin\\python3.12.exe',
+  'interpreter C:\\tools\\python.exe',
   'url https://example.com/x.svg and data:image/png;base64,AAAA',
-  'quoted "C:\\Users\\LIU\\out\\报告.pdf", comma',
+  'quoted "C:\\work\\out\\报告.pdf", comma',
   'nested (sub/dir/deep/file.mp4) end',
   './relative/file.md and ../up/file.md',
   'version 13.2 released; a.b.c.d is not a path',

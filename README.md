@@ -422,13 +422,15 @@ node test/harness.mjs         # 37 项：客户端 bundle 的契约、证据规�
 node test/autofill-off.mjs    #  3 项：历史填充必须在启动时接上（关掉它会让历史链接静默失效）
 ```
 
-诊断脚本（开发用，会读本机 session 日志）：
+诊断脚本（开发用，会读本机 session 日志 / 已装的 DSH）：
 
 ```bash
 node test/probe.mjs      # 人眼抽样：真实 JSON / 真实线形 → 抽出的路径
 node test/realdata.mjs   # 拿本机 session 日志里的真实工具结果跑抽取
-node test/diagnose.mjs   # 按轮次列出真实 session 会列出哪些路径、哪些调用
+node test/diagnose.mjs [needle]   # 按轮次列出真实 session 会列出哪些路径、哪些调用（默认 `.pptx`）
 ```
+
+这些脚本不再写死任何人的家目录：`test/dsh-paths.mjs` 负责解析 —— DSH 主目录取 `$DSH_HOME` 或 `~/.dsh`，DSH 安装位置取 `$DSH_INSTALL` 或 PATH 上 `dsh` 命令所在目录（其次 `npm root -g`）。换了机器照样能跑。
 
 真浏览器验证（需要本机 Chrome，以及一个正在跑的 `dsh web`）：
 

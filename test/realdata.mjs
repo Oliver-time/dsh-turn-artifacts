@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { decompressSession } from './zstd.mjs'
 import { resultTexts } from './wire.mjs'
+import { sessionsRoot } from './dsh-paths.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
@@ -22,7 +23,7 @@ const exported = registration.factory((spec) => {
   throw new Error(`unexpected require(${spec})`)
 })
 
-const root = 'C:\\Users\\LIU\\.dsh\\sessions'
+const root = sessionsRoot
 const results = []
 for (const project of readdirSync(root)) {
   const projectDir = join(root, project)

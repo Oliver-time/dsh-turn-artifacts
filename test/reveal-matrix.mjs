@@ -20,13 +20,12 @@ import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { dirname } from 'node:path'
+import { dshModuleUrl } from './dsh-paths.mjs'
 
 const here = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
 const root = join(here, '..', '.reveal-test')
 
-const nativeCommand = await import(
-  'file:///C:/Users/LIU/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-native-command/lib/index.js'
-)
+const nativeCommand = await import(dshModuleUrl('dsh-native-command', 'lib/index.js'))
 
 const run = (command, args) => new Promise((resolve) => {
   execFile(command, args, { encoding: 'utf8', windowsHide: true }, (error, stdout, stderr) => {

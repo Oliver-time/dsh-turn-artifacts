@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { decompressSession } from './zstd.mjs'
 import { resultTexts } from './wire.mjs'
+import { sessionsRoot } from './dsh-paths.mjs'
 import { readFileSync } from 'node:fs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -38,7 +39,7 @@ const NEEDLE = process.argv[2] ?? '.pptx'
 
 /** Newest session logs first. */
 function logs() {
-  const root = 'C:\\Users\\LIU\\.dsh\\sessions'
+  const root = sessionsRoot
   const found = []
   for (const project of readdirSync(root)) {
     const projectDir = join(root, project)

@@ -135,7 +135,7 @@ function fakeContext() {
     current: () => 'session-1',
     list: {
       getSnapshot: () => ({
-        byId: { 'session-1': { cwd: 'C:\\Users\\LIU\\Desktop\\lyh_robot' } },
+        byId: { 'session-1': { cwd: 'C:\\work\\slides' } },
       }),
     },
   }
@@ -257,10 +257,10 @@ const shipChatFileMentions = (ctx, paths) => {
 
 // ── the turn from the report ───────────────────────────────────────────────
 
-const SCRIPT = 'C:\\Users\\LIU\\Desktop\\lyh_robot\\assets\\polish_v13.py'
-const PPTX = 'C:\\Users\\LIU\\Desktop\\lyh_robot\\_文档\\暑期汇报_20260909\\暑期科研汇报_正式流程图版_甘雨模板_5分钟版_v13.pptx'
-const PNG = 'C:\\Users\\LIU\\Desktop\\lyh_robot\\_文档\\暑期汇报_20260909\\assets\\_v13_overview.png'
-const MD = 'C:\\Users\\LIU\\Desktop\\lyh_robot\\_文档\\暑期汇报_20260909\\版式打磨说明_v13.md'
+const SCRIPT = 'C:\\work\\slides\\assets\\polish_v13.py'
+const PPTX = 'C:\\work\\slides\\_文档\\暑期汇报_20260909\\暑期科研汇报_正式流程图版_甘雨模板_5分钟版_v13.pptx'
+const PNG = 'C:\\work\\slides\\_文档\\暑期汇报_20260909\\assets\\_v13_overview.png'
+const MD = 'C:\\work\\slides\\_文档\\暑期汇报_20260909\\版式打磨说明_v13.md'
 
 const reportTurn = () => [
   turnStart(1),
@@ -269,8 +269,8 @@ const reportTurn = () => [
   toolCall(1, 'call-write-py', 'write', { file_path: SCRIPT, content: 'print(1)' }),
   toolResult('call-write-py', 'File created.'),
   toolCall(1, 'call-run', 'pwsh', {
-    command: '"C:\\Users\\LIU\\.local\\bin\\python3.12.exe" assets\\polish_v13.py',
-    workdir: 'C:\\Users\\LIU\\Desktop\\lyh_robot',
+    command: '"C:\\tools\\python.exe" assets\\polish_v13.py',
+    workdir: 'C:\\work\\slides',
   }),
   toolResult('call-run', JSON.stringify({
     written: PPTX,
@@ -278,7 +278,7 @@ const reportTurn = () => [
     bytes: 2750000,
     chart: PNG,
     log: '_文档\\暑期汇报_20260909\\build.log',
-    ignored: 'C:\\Users\\LIU\\.local\\bin\\python3.12.exe',
+    ignored: 'C:\\tools\\python.exe',
   })),
 ]
 
@@ -300,13 +300,13 @@ check('path extraction keeps artifacts and drops toolchains', () => {
     written: PPTX,
     chart: PNG,
     log: '_文档\\暑期汇报_20260909\\build.log',
-    interpreter: 'C:\\Users\\LIU\\.local\\bin\\python3.12.exe',
+    interpreter: 'C:\\tools\\python.exe',
     url: 'https://example.com/x.svg',
   }))
   const keys = found.map((path) => path.replace(/\\/g, '/').toLowerCase())
-  assert.ok(keys.includes('c:/users/liu/desktop/lyh_robot/_文档/暑期汇报_20260909/暑期科研汇报_正式流程图版_甘雨模板_5分钟版_v13.pptx'), 'the produced pptx is an artifact')
-  assert.ok(keys.includes('c:/users/liu/desktop/lyh_robot/_文档/暑期汇报_20260909/assets/_v13_overview.png'), 'the produced png is an artifact')
-  assert.ok(!keys.some((key) => key.includes('python3.12.exe')), 'a toolchain executable is not an artifact')
+  assert.ok(keys.includes('c:/work/slides/_文档/暑期汇报_20260909/暑期科研汇报_正式流程图版_甘雨模板_5分钟版_v13.pptx'), 'the produced pptx is an artifact')
+  assert.ok(keys.includes('c:/work/slides/_文档/暑期汇报_20260909/assets/_v13_overview.png'), 'the produced png is an artifact')
+  assert.ok(!keys.some((key) => key.includes('python.exe')), 'a toolchain executable is not an artifact')
   assert.ok(!keys.some((key) => key.includes('example.com')), 'a url is not an artifact')
 })
 
@@ -392,7 +392,7 @@ check('the report turn produces clickable mentions', () => {
   pptx.open()
   const last = opened.at(-1)
   assert.ok(last.endsWith('v13.pptx'), 'activating the link opens the file')
-  assert.ok(last.replace(/\\/g, '/').startsWith('C:/Users/LIU/Desktop/lyh_robot'), 'the absolute path is preserved')
+  assert.ok(last.replace(/\\/g, '/').startsWith('C:/work/slides'), 'the absolute path is preserved')
 
   assert.ok(closing.resolve('_v13_overview.png') !== undefined, 'the chart is clickable by basename')
   assert.ok(closing.resolve(MD) !== undefined, 'the shipped vocabulary still answers its own file')
@@ -428,7 +428,7 @@ check('launching a script does not count as producing its source', () => {
   exportsOf.apply(ctx)
   const { data } = fold(ctx, [
     turnStart(2),
-    toolCall(2, 'call-run', 'pwsh', { command: 'python assets/make_trend_chart_v2.py', workdir: 'C:\\Users\\LIU\\Desktop\\lyh_robot' }),
+    toolCall(2, 'call-run', 'pwsh', { command: 'python assets/make_trend_chart_v2.py', workdir: 'C:\\work\\slides' }),
     toolResult('call-run', 'chart written to assets/trend_v2.png'),
   ])
   const keys = data.value.artifacts.map((path) => path.replace(/\\/g, '/').toLowerCase())
@@ -849,7 +849,7 @@ check('file addresses round-trip through build and parse', () => {
     'separators stay separators; a name is encoded segment by segment',
   )
   assert.deepEqual(parse(address), { scope: 'session', sessionId: 'session-1', path: 'assets/sub dir/报告.pdf' })
-  assert.deepEqual(parse(build('s', 'C:/Users/LIU/out/x.pptx')), { scope: 'session', sessionId: 's', path: 'C:/Users/LIU/out/x.pptx' }, 'a drive letter survives encoding')
+  assert.deepEqual(parse(build('s', 'C:/work/out/x.pptx')), { scope: 'session', sessionId: 's', path: 'C:/work/out/x.pptx' }, 'a drive letter survives encoding')
   assert.deepEqual(parse('dsh-resource://file/absolute/C:/x/y.pptx'), { scope: 'absolute', path: 'C:/x/y.pptx' })
   assert.deepEqual(parse('dsh-resource://file/absolute//server/share/x.bin'), { scope: 'absolute', path: '//server/share/x.bin' }, 'a UNC path keeps its leading slashes')
 

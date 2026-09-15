@@ -12,15 +12,15 @@
  * @module test/reveal-probe
  */
 
+import { dshModuleUrl } from './dsh-paths.mjs'
+
 const [, , target, intent = 'reveal'] = process.argv
 if (target === undefined) {
   console.error('usage: node test/reveal-probe.mjs "<absolute path>" [open|reveal]')
   process.exit(2)
 }
 
-const nativeCommand = await import(
-  'file:///C:/Users/LIU/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-native-command/lib/index.js'
-)
+const nativeCommand = await import(dshModuleUrl('dsh-native-command', 'lib/index.js'))
 
 console.log(`platform=${process.platform} intent=${intent}`)
 console.log(`target=${target}`)
