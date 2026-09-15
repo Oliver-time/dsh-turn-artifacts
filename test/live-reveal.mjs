@@ -156,6 +156,34 @@ try {
     const menu = await evaluate(`[...document.querySelectorAll('[role="menuitem"], [data-file-tab-action]')].map((el) => el.textContent.trim())`)
     console.log(`menu items: ${JSON.stringify(menu)}`)
 
+    // Compare this plugin's rows against the menu's own close row, computed style by
+    // computed style. The menu styles its row with a CSS-module class and appends
+    // these untouched, so any difference here shows up as a foreign block in the
+    // popup — which is exactly what a reader reported.
+    const styles = await evaluate(`(() => {
+      const read = (el) => {
+        if (el === null) return null;
+        const s = getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return {
+          text: el.textContent.trim().slice(0, 10),
+          background: s.backgroundColor,
+          color: s.color,
+          fontSize: s.fontSize,
+          padding: s.padding,
+          radius: s.borderRadius,
+          width: Math.round(r.width),
+          textLeft: Math.round(r.left + parseFloat(s.paddingLeft))
+        };
+      };
+      return {
+        close: read(document.querySelector('[data-dockkit-menu-close]')),
+        mine: [...document.querySelectorAll('[data-file-tab-action]')].map(read)
+      };
+    })()`)
+    console.log(`  kit close row: ${JSON.stringify(styles?.close)}`)
+    for (const row of styles?.mine ?? []) console.log(`  plugin row:    ${JSON.stringify(row)}`)
+
     console.log(await evaluate(`window.__clickText('打开文件所在路径')`))
     // The menu reports the outcome and closes shortly after, so the line has to be
     // read inside that window rather than once everything has settled.
