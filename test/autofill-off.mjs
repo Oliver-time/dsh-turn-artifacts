@@ -1,11 +1,16 @@
 /**
  * Regression guard for the history-autofill switch.
  *
- * The fill is off by default because it wrecked large sessions (see the
- * `HISTORY_AUTOFILL_ENABLED` doc comment in `lib/client.js`). That makes "does
- * `apply()` still subscribe to the session list?" the one thing that must never
- * silently regress: if the switch is flipped back on by accident, this check
- * fails and says so.
+ * The fill is ON, and that is load-bearing: the client opens a conversation with
+ * only its newest 50 events, so a turn whose tool output produced a file is
+ * outside the window in any long conversation. Without the fill the plugin never
+ * sees that evidence, and historical file mentions silently stop being links —
+ * which is exactly the regression a disabled fill caused once already.
+ *
+ * So "does `apply()` still subscribe and page?" is the thing that must never
+ * silently regress. Turning the fill off is a legitimate choice, but it has a
+ * user-visible cost, and this check makes that cost a decision rather than an
+ * accident.
  *
  * Run with: node test/autofill-off.mjs
  *
@@ -59,14 +64,16 @@ function probingContext() {
 const checks = []
 const check = (name, fn) => checks.push({ name, fn })
 
-check('apply() does not subscribe to the session list while the fill is off', () => {
+check('apply() subscribes to the session list so history can be paged', () => {
   const ctx = probingContext()
   exported.apply(ctx)
-  assert.equal(ctx.subscriptions, 0, 'the session list must not be subscribed')
-  assert.equal(ctx.opens, 0, 'no session may be opened by the plugin')
+  assert.equal(ctx.subscriptions, 1, 'the fill must subscribe; without it, evidence outside the 50-event window is invisible')
+  // Opening happens on the subscription's first notification, which is a later
+  // microtask; `history autofill pages an opened session back to the start` in
+  // harness.mjs covers the paging itself.
 })
 
-check('the fill still works when it is called explicitly', async () => {
+check('the fill pages a session back to the start', async () => {
   const session = {
     baseSeq: 100,
     hasMore: true,
@@ -79,7 +86,7 @@ check('the fill still works when it is called explicitly', async () => {
     },
   }
   const sessions = { binding: () => ({ session }), list: {} }
-  assert.equal(await exported.fillHistory(sessions, 'session-1', 5), 2, 'explicit paging is unaffected by the switch')
+  assert.equal(await exported.fillHistory(sessions, 'session-1', 5), 2, 'every remaining page is pulled')
 })
 
 check('the plugin still mounts and exports its real surface', () => {

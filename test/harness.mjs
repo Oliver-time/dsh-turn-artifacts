@@ -600,26 +600,26 @@ check('history autofill stops on a stalled page and tolerates what it cannot pag
   assert.equal(broken.loadCalls, 0, 'no page is attempted after a failed open')
 })
 
-check('mounting the plugin starts no history fill at all', async () => {
-  // The fill is off by default: paging a multi-megabyte log back to its start on
-  // open made conversations render empty (see HISTORY_AUTOFILL_ENABLED in
-  // lib/client.js). `fillHistory` itself stays tested above as a pure function;
-  // what must never regress silently is `apply()` reaching for the session list.
+check('mounting the plugin fills the current session and stops on disposal', async () => {
+  // The fill runs by default, and that is load-bearing: the client opens a
+  // conversation with only its newest 50 events, so in any long conversation the
+  // tool result that produced a file sits outside the window and the plugin would
+  // never see the evidence. A disabled fill once made historical mentions stop
+  // being links — this check keeps the fill wired.
   const sessions = fakeSessions({ s1: fakeSession('s1', 3), s2: fakeSession('s2', 2) })
   const ctx = autofillContext(sessions)
   exportsOf.apply(ctx)
 
   await settle()
-  assert.equal(sessions.listenerCount(), 0, 'the plugin must not subscribe to the session list')
-  assert.equal(sessions.sessions.get('s1').loadCalls, 0, 'the current session is left alone')
+  assert.equal(sessions.listenerCount(), 1, 'the plugin subscribes to the session list')
+  assert.equal(sessions.sessions.get('s1').loadCalls, 3, 'the current session is paged back')
 
   sessions.setCurrent('s2')
   await settle()
-  assert.equal(sessions.sessions.get('s2').loadCalls, 0, 'switching sessions pages nothing')
-  assert.equal(sessions.sessions.get('s2').openCalls ?? 0, 0, 'no session is opened by the plugin')
+  assert.equal(sessions.sessions.get('s2').loadCalls, 2, 'a session opened later is paged too')
 
   ctx.disposeAll()
-  assert.equal(sessions.listenerCount(), 0, 'disposal has nothing to release')
+  assert.equal(sessions.listenerCount(), 0, 'disposal releases the subscription')
 })
 
 check('history autofill reaches a session through either lookup', async () => {
