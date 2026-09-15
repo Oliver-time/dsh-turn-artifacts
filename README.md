@@ -24,7 +24,24 @@
 
 1. **脚本产物可点**（插件的主职）。收尾正文里用行内代码提到本轮产出过的文件，就能点开，即使它只被脚本碰过。
 2. **多一行「脚本产物」**。收尾消息末尾列出行内不可见、但本轮确实产出的文件 chip，点击直接打开。只列文件工具没写过、纯由命令产出的那些，不与官方那行重复。
-3. ~~**历史窗口自动填满**~~ —— **默认关闭**，原因见下。
+3. **侧边栏文件标签的右键菜单多两项**（v0.5.0）：在侧边栏里打开文件后，右键标签上的文件名，除了侧边栏自带的「关闭」，还有 **用默认软件打开** 和 **打开文件所在路径**。
+
+### 右键菜单这两项怎么实现的
+
+侧边栏（`@deepseek-ai/dsh-client-ui-sidebar-right`）为「标签动作菜单的额外项」留了一个 list 插槽 `sidebar.right.tab.menu.item`，菜单本体由 dockkit 渲染，自带一项「关闭」（宿主传入 `onClose`），插槽里的项作为 `extras` 追加在后面 —— 所以最终是**三项**。
+
+插件注册两项，都通过客户端可用的远程方法落到 Host：
+
+| 菜单项 | 调用 |
+| --- | --- |
+| 用默认软件打开 | `ctx.remote.session.openWorkspacePath({ path })` |
+| 打开文件所在路径 | `ctx.remote.session.openWorkspacePath({ path, action: 'reveal' })` |
+
+文件路径从**标签地址**反解：文件标签的 `contentId` 就是 `dsh-resource://file/session/<sessionId>/<path>`，插件自己解析（`parseFileAddress`），不依赖任何注册表。非文件标签（指南页等）解析返回 `undefined`，两项就不显示 —— 不会给你一堆点不动的选项。动作失败会在菜单里回一行可见提示，而不是静默。
+
+### 点击链接一律先进侧边栏
+
+0.1.5 起核心把 `openFile` 换成了侧边栏路由，但**官方词表里 `present` 工具声明过的文件仍然直接调原生打开器**（弹 PowerPoint）。本插件对自己的解析器采取**优先级而非兜底**：凡是插件索引到的路径，先由插件回答，统一走 `dsh-resource://file/…` 进侧边栏；其余 token 仍由官方解析器决定。这样「所有文件都先进侧边栏」才成立，之后在侧边栏里再用右键菜单决定要不要交给外部程序。
 
 ### 修过的问题（v0.4.0）
 
@@ -237,6 +254,7 @@ DSH 从 0.1.5-rc.2 起带了一批侧边栏插件（`dsh-client-ui-sidebar`、`-
 
 ## 版本记录
 
+- **v0.5.0** — 侧边栏文件标签右键菜单加两项（用默认软件打开 / 打开文件所在路径），并把解析优先级反转，使所有被索引到的提及一律先进侧边栏，而不是弹外部程序。同时修掉包裹 `chatFileMentions` 依赖加载顺序的问题（服务晚注册时改为事件驱动补装，不再只依赖 apply 那一刻）。真机验证：在 Chrome 页面内调用菜单组件，两项渲染正确、两个动作分别发出 `{path}` 与 `{path, action:"reveal"}`。
 - **v0.4.2** — 重新开启历史自动填充。v0.4.0/v0.4.1 关闭它是误判：那段时间「老对话里文件不再变蓝」正是关掉它造成的（证据在 50 条窗口之外，插件看不见）。当时归因的「对话空白」真因是 `state` 崩溃，已修。真浏览器实测：50 轮会话 743 个行内代码块正常渲染、33 个提及成链、零异常。
 - **v0.4.0** — 修掉「对话区空白」的真根因：产物定义在 `state` 未播种时崩溃（窗口从 turn 中间开始时发生），打断了会话事件流，导致整个对话区渲染为空。新增 `test/regression-probe.mjs`，它会剥离守卫来证明回归测试本身有效。（同一版**错误地**关闭了历史填充，v0.4.2 已纠正。）
 - **v0.3.0** — 首次公开：脚本产物可点 + 产物 chip + Host 侧提示词。
@@ -257,7 +275,8 @@ DSH 从 0.1.5-rc.2 起带了一批侧边栏插件（`dsh-client-ui-sidebar`、`-
 ```bash
 npm test                      # 等于下面两条
 node test/host.mjs            #  5 项：Host 半部的 section 名字/顺序/内容、status 服务、版本一致
-node test/harness.mjs         # 19 项：客户端 bundle 的契约、证据规则、匹配优先级、autofill
+node test/harness.mjs         # 24 项：客户端 bundle 的契约、证据规则、匹配优先级、侧边栏地址、autofill
+node test/autofill-off.mjs    #  3 项：历史填充必须在启动时接上（关掉它会让历史链接静默失效）
 ```
 
 诊断脚本（开发用，会读本机 session 日志）：
@@ -265,8 +284,17 @@ node test/harness.mjs         # 19 项：客户端 bundle 的契约、证据规�
 ```bash
 node test/probe.mjs      # 人眼抽样：真实 JSON / 真实线形 → 抽出的路径
 node test/realdata.mjs   # 拿本机 session 日志里的真实工具结果跑抽取
-node test/diagnose.mjs   # 按轮次列出真实 session 会索引到哪些路径、哪些调用
+node test/diagnose.mjs   # 按轮次列出真实 session 会列出哪些路径、哪些调用
 ```
+
+真浏览器验证（需要本机 Chrome，以及一个正在跑的 `dsh web`）：
+
+```bash
+node test/browser-menu.mjs "<带 token 的地址>"    # 在真实页面里调用右键菜单组件，打印菜单项与两个动作的实际远程调用
+node test/browser-shot.mjs "<地址>" "<会话标题>" out.png   # 打开会话、截图、转储行内代码与提及数量
+```
+
+这两个脚本用 `test/cdp.mjs` 直接走 Chrome DevTools 协议（不需要装 puppeteer）。**这不是洁癖**：这个插件曾经在离线测试全绿的情况下把线上功能弄坏 —— 包裹时机依赖加载顺序、菜单没在真机点过。能点一遍就别只跑单测。
 
 `test/harness.mjs` 自带一个 `window.__ModuleLoader__` 接收器、一张只含 `react` 的模块表和一个假 ctx，所以能在没有浏览器、没有 dsh 服务的情况下跑客户端 bundle 本身 —— 包括那个真实线形的嵌套结果块。
 

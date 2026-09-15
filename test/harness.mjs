@@ -50,12 +50,23 @@ globalThis.window = {
   },
 }
 
-/** React stand-in: the plugin only uses createElement and useEffect. */
+/**
+ * React stand-in: enough of the API for the components this bundle defines.
+ *
+ * `createElement` keeps children in the shape the checks read (`props` and
+ * `children`), `useEffect` is a no-op because nothing here mounts a tree, and
+ * `useState` returns an inert pair so a component that keeps transient status
+ * can still be called as a plain function.
+ */
 const react = {
+  Fragment: Symbol('Fragment'),
   createElement(type, props, children) {
     return { type, props, children }
   },
   useEffect() {},
+  useState(initial) {
+    return [typeof initial === 'function' ? initial() : initial, () => {}]
+  },
 }
 
 const seed = new Map([['react', react]])
@@ -725,6 +736,104 @@ check('the mention wrapper forwards every argument the view passes', () => {
   assert.doesNotThrow(() => oneArg.services.get('chatFileMentions').forClosing(turnDataArg, 's'))
   assert.doesNotThrow(() => oneArg.services.get('chatFileMentions').forClosing(undefined, 's'))
   assert.doesNotThrow(() => oneArg.services.get('chatFileMentions').forClosing({}, 's'))
+})
+
+// ── sidebar integration ───────────────────────────────────────────────────
+
+check('file addresses round-trip through build and parse', () => {
+  const build = exportsOf.sessionFileAddress
+  const parse = exportsOf.parseFileAddress
+
+  const address = build('session-1', 'assets\\sub dir\\报告.pdf')
+  assert.equal(
+    address,
+    'dsh-resource://file/session/session-1/assets/sub%20dir/%E6%8A%A5%E5%91%8A.pdf',
+    'separators stay separators; a name is encoded segment by segment',
+  )
+  assert.deepEqual(parse(address), { scope: 'session', sessionId: 'session-1', path: 'assets/sub dir/报告.pdf' })
+  assert.deepEqual(parse(build('s', 'C:/Users/LIU/out/x.pptx')), { scope: 'session', sessionId: 's', path: 'C:/Users/LIU/out/x.pptx' }, 'a drive letter survives encoding')
+  assert.deepEqual(parse('dsh-resource://file/absolute/C:/x/y.pptx'), { scope: 'absolute', path: 'C:/x/y.pptx' })
+  assert.deepEqual(parse('dsh-resource://file/absolute//server/share/x.bin'), { scope: 'absolute', path: '//server/share/x.bin' }, 'a UNC path keeps its leading slashes')
+
+  // Anything that is not a file address must decline: this is how a menu item
+  // decides not to offer file actions for the guide or a page tab.
+  for (const notAFile of ['', 'dsh-resource://guide/home', 'dsh-resource://file/session/', 'dsh-resource://file/session/s', 'https://example.com/x', undefined, 42]) {
+    assert.equal(parse(notAFile), undefined, `${String(notAFile)} is not a file address`)
+  }
+})
+
+check('file menu items decline for tabs that are not files', () => {
+  const build = exportsOf.sessionFileAddress
+  const items = exportsOf.FileTabMenuItems
+  const ctx = { remote: { session: { openWorkspacePath: async () => ({ ok: true }) } } }
+
+  // A page tab: nothing to offer.
+  assert.equal(items({ tab: { contentId: 'dsh-resource://guide/home' }, dismiss: () => {}, ctx }), null)
+  assert.equal(items({ tab: { contentId: 'nonsense' }, dismiss: () => {}, ctx }), null)
+  assert.equal(items({ tab: {}, dismiss: () => {}, ctx }), null)
+
+  // A file tab: two entries, and the owner share is read either way round.
+  const tab = { contentId: build('s1', 'out/report.pdf') }
+  const element = items({ tab, dismiss: () => {}, ctx })
+  assert.notEqual(element, null, 'a file tab gets actions')
+  const children = (element.children ?? []).filter(Boolean)
+  assert.equal(children.length, 2, 'exactly the two actions before any status line')
+  assert.deepEqual(children.map((child) => child.props['data-file-tab-action']), ['open', 'reveal'])
+})
+
+check('the plugin resolver answers before the shipped one', () => {
+  // The `present` tool puts script output into the shipped vocabulary, and that
+  // vocabulary opens it with the native opener — into PowerPoint, not the
+  // Sidebar. So for a path this plugin indexed, its resolver must win.
+  const ctx = fakeContext()
+  const coreAnswers = []
+  ctx.services.set('chatFileMentions', {
+    forClosing: () => ({
+      resolve(token) {
+        coreAnswers.push(token)
+        return { open: () => {}, label: 'shipped', title: 'shipped' }
+      },
+    }),
+  })
+  exportsOf.apply(ctx)
+
+  const ownerShape = {
+    turn: { turn: 1, data: { get: () => undefined } },
+    seq: 10,
+    sessionId: 'session-1',
+    openFile: () => {},
+  }
+  const closing = ctx.services.get('chatFileMentions').forClosing(ownerShape, 'session-1')
+
+  // Turn 1 is the report turn folded by an earlier check; the pptx is in it.
+  const mine = closing.resolve('暑期科研汇报_正式流程图版_甘雨模板_5分钟版_v13.pptx')
+  assert.ok(mine !== undefined, 'the pptx resolves')
+  assert.notEqual(mine.title, 'shipped', 'this plugin answered first, not the shipped resolver')
+  assert.match(mine.title, /v13\.pptx/)
+  assert.equal(coreAnswers.length, 0, 'the shipped resolver is not even consulted for an indexed path')
+
+  // A token only the shipped resolver knows still reaches it.
+  const theirs = closing.resolve('something-only-they-know.md')
+  assert.equal(theirs.title, 'shipped', 'an unindexed token still falls through')
+  assert.deepEqual(coreAnswers, ['something-only-they-know.md'])
+})
+
+check('the artifact row routes into the sidebar when one exists', () => {
+  const opened = []
+  const ctx = fakeContext()
+  ctx.sidebarRight = { openResource: (address) => opened.push(address) }
+  const sessions = fakeSessions({ 'session-1': fakeSession('session-1', 0) })
+  ctx.sessions = sessions
+  shipChatFileMentions(ctx, [])
+  exportsOf.apply(ctx)
+
+  const { data } = fold(ctx, reportTurn())
+  const selected = ctx.slotDeclaration.select({ ...owner(data), sessionId: 'session-1' })
+  assert.ok(selected !== null, 'the row still claims the turn')
+  assert.equal(typeof selected.openInSidebar, 'function', 'the row carries a sidebar route when one exists')
+  selected.openInSidebar('out/chart.png')
+  assert.equal(opened.length, 1)
+  assert.match(opened[0], /^dsh-resource:\/\/file\/session\/session-1\//, 'it opens a file address, not a bare path')
 })
 
 let failed = 0

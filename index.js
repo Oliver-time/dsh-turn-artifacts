@@ -45,7 +45,7 @@
 export const PLUGIN_NAME = 'turn-artifacts'
 
 /** Plugin version, kept in step with package.json. */
-export const PLUGIN_VERSION = '0.4.2'
+export const PLUGIN_VERSION = '0.5.0'
 
 /**
  * Prompt section this half owns.
