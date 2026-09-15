@@ -11,7 +11,7 @@
  * Reads `$DSH_HOME/sessions` and decodes `.jsonl.zstd` logs through `zstd.mjs`.
  * Nothing here asserts; `test/harness.mjs` owns the pass/fail checks.
  *
- * Run with: node test\diagnose.mjs
+ * Run with: node test\diagnose.mjs [needle]   (default `.pptx`)
  *
  * @module test/diagnose
  */
@@ -33,7 +33,8 @@ const exported = registration.factory((spec) => {
   throw new Error(`unexpected require(${spec})`)
 })
 
-const NEEDLE = '.pptx'
+/** The substring a path must contain to be reported; the first argument. */
+const NEEDLE = process.argv[2] ?? '.pptx'
 
 /** Newest session logs first. */
 function logs() {

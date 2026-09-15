@@ -6,7 +6,7 @@
  * "did a window for that folder appear" is measured rather than assumed. It opens
  * Explorer windows and closes the ones it opened.
  *
- * Run with: node test/live-reveal.mjs "<url with token>" "<session title>" [--pptx]
+ * Run with: node test/live-reveal.mjs "<url with token>" "<session title>" [--pptx | "<mention text>"]
  *
  * @module test/live-reveal
  */
@@ -16,6 +16,8 @@ import { connect, launchChrome, waitForEndpoint } from './cdp.mjs'
 
 const [url, sessionTitle, flag] = process.argv.slice(2)
 const wantPptx = flag === '--pptx'
+/** A third argument that is not `--pptx` is a mention to prefer, e.g. a known file. */
+const prefer = flag !== undefined && flag !== '--pptx' ? flag : undefined
 
 const INSTRUMENT = `
 window.__probe = { errors: [] };
@@ -95,7 +97,7 @@ try {
   // `--pptx` prefers a chip whose name the Windows reveal cannot survive: the
   // artifact row lists what a command produced, so a Chinese-named file shows up
   // there without needing a prose mention of it.
-  let wanted = wantPptx ? mentions.find((text) => text.endsWith('.pptx')) : mentions[0]
+  let wanted = wantPptx ? mentions.find((text) => text.endsWith('.pptx')) : (mentions.includes(prefer) ? prefer : mentions[0])
   if (wantPptx && wanted === undefined) {
     const chips = await evaluate(`[...document.querySelectorAll('[data-turn-artifacts-row] .dta-file')].map((el) => el.textContent.trim())`)
     console.log(`chips on screen: ${JSON.stringify(chips.slice(0, 8))}`)

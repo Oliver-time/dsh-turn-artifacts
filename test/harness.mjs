@@ -50,13 +50,17 @@ globalThis.window = {
   },
 }
 
+/** Every value a component pushed through a `useState` setter, in order. */
+const stateUpdates = []
+
 /**
  * React stand-in: enough of the API for the components this bundle defines.
  *
  * `createElement` keeps children in the shape the checks read (`props` and
  * `children`), `useEffect` is a no-op because nothing here mounts a tree, and
  * `useState` returns an inert pair so a component that keeps transient status
- * can still be called as a plain function.
+ * can still be called as a plain function — while recording what the setter was
+ * given, which is how a check reads the menu's status line without a renderer.
  */
 const react = {
   Fragment: Symbol('Fragment'),
@@ -65,7 +69,10 @@ const react = {
   },
   useEffect() {},
   useState(initial) {
-    return [typeof initial === 'function' ? initial() : initial, () => {}]
+    return [
+      typeof initial === 'function' ? initial() : initial,
+      (next) => stateUpdates.push(typeof next === 'function' ? next(undefined) : next),
+    ]
   },
 }
 
@@ -1083,16 +1090,18 @@ check('the file menu reaches the Host through the same guard', async () => {
   // working directory on the far side, which is a different file or none at all.
   const workspace = fakeContext().sessions.list.getSnapshot().byId['session-1'].cwd
   assert.deepEqual(calls[0], { path: `${workspace}/reports/report 2026.pptx` }, 'the open action sends a resolved path')
-  assert.deepEqual(calls[1], { path: `${workspace}/reports/report 2026.pptx`, action: 'reveal' }, 'the reveal action names the action')
+  assert.deepEqual(calls[1], { path: `${workspace}/reports` }, 'the reveal action sends the containing folder')
 })
 
 check('a reveal Explorer cannot perform opens the folder instead', async () => {
-  // `revealNativePath` hands Explorer a percent-encoded `file:///` URL, and
-  // Explorer does not decode it: measured on this machine, `plain.txt` and
-  // `with space.txt` still open their folder while `暑期科研汇报_v13.pptx` and
-  // `中文目录\report.pptx` produce no window at all. The Host reports success
-  // either way, so the browser is the only place that can notice — and it opens
-  // the containing folder through the same RPC rather than doing nothing.
+  // The Host's reveal is unusable on two measured counts: `explorer.exe /select,
+  // <percent-encoded file URL>` finds nothing when the name needs a multi-byte
+  // escape (`暑期科研汇报_v13.pptx`, `中文目录\report.pptx` produced no window at
+  // all, while `plain.txt` and `with space.txt` did), and even when it does open
+  // the folder the window stays behind the browser — a reader reported "nothing
+  // happens" while the same folder was found open six times over. So the reveal
+  // item asks for the containing folder, which the Host opens with PowerShell's
+  // `Invoke-Item -LiteralPath` and which works for every name.
   const calls = []
   const base = fakeContext()
   base.remote.session.openWorkspacePath = async (request) => {
@@ -1111,29 +1120,118 @@ check('a reveal Explorer cannot perform opens the folder instead', async () => {
 
   revealOf(render('reports/暑期科研汇报_v13.pptx')).props.onClick()
   await new Promise((resolve) => setTimeout(resolve, 20))
-  assert.deepEqual(calls.at(-1), { path: `${workspace}/reports` }, 'a non-ASCII name opens its folder, with no action')
+  assert.deepEqual(calls.at(-1), { path: `${workspace}/reports` }, 'a non-ASCII name opens its folder')
 
   revealOf(render('reports/plain.txt')).props.onClick()
   await new Promise((resolve) => setTimeout(resolve, 20))
-  assert.deepEqual(calls.at(-1), { path: `${workspace}/reports/plain.txt`, action: 'reveal' }, 'an ASCII path still gets a real reveal')
+  assert.deepEqual(calls.at(-1), { path: `${workspace}/reports` }, 'and so does an ASCII one, instead of a reveal nobody sees')
 
-  // The nested-directory case is the one a "is the file name ASCII?" shortcut
-  // would get wrong: here the *directory* carries the multi-byte escape.
+  // The nested-directory case is why the rule cannot be "is the file name ASCII?":
+  // here the *directory* carries the multi-byte escape.
   revealOf(render('reports/中文目录/plain.txt')).props.onClick()
   await new Promise((resolve) => setTimeout(resolve, 20))
   assert.deepEqual(calls.at(-1), { path: `${workspace}/reports/中文目录` }, 'a non-ASCII directory opens its folder too')
 })
 
-check('the reveal rule and the folder cut are what the measurement says', () => {
-  assert.equal(exportsOf.hostRevealCanFind('C:/a/b.txt'), true, 'printable ASCII travels intact')
-  assert.equal(exportsOf.hostRevealCanFind('C:/a/报告.txt'), false, 'a multi-byte escape does not')
-  assert.equal(exportsOf.hostRevealCanFind('C:/a/with space.txt'), true, 'a space survives, as measured')
-  assert.equal(exportsOf.hostRevealCanFind('C:/a/comma,file.txt'), true, 'and so does a comma')
+check('the folder cut is what the measurement says', () => {
   assert.equal(exportsOf.parentFolderOf('C:/a/b/c.txt'), 'C:/a/b', 'the folder above a file')
   assert.equal(exportsOf.parentFolderOf('C:/a/b/'), 'C:/a', 'a trailing separator is not a name')
   assert.equal(exportsOf.parentFolderOf('C:/a'), 'C:/', 'a drive root keeps its separator')
   assert.equal(exportsOf.parentFolderOf('/a'), '/', 'so does a POSIX root')
   assert.equal(exportsOf.parentFolderOf('b.txt'), undefined, 'a bare name has no folder to name')
+})
+
+check('a path the Host says is gone is reported, not opened', async () => {
+  // The native opener cannot report a reveal's failure: the Host swallows
+  // Explorer's exit code 1, which is what Explorer returns for a path it cannot
+  // select. Measured, `revealNativePath` on a nonexistent path resolves in 510 ms
+  // and shows nothing — so "gone" and "opened" reach the plugin as one success.
+  // `workspaceFiles.stat` is the authority that separates them, and this is the
+  // check that it is consulted before anything is claimed.
+  stateUpdates.length = 0
+  const calls = []
+  const base = fakeContext()
+  base.remote.session.openWorkspacePath = async (request) => {
+    calls.push(request)
+    return { ok: true, value: { opened: true } }
+  }
+  base.remote.workspaceFiles = {
+    stat: async () => ({ ok: false, error: { message: 'no entry at "assets/_v13_overview.png"' } }),
+  }
+  const { ctx } = guardedContext(base, DECLARED)
+
+  const node = exportsOf.FileTabMenuItems({
+    tab: { contentId: exportsOf.sessionFileAddress('session-1', 'assets/_v13_overview.png') },
+    dismiss: () => {},
+    ctx,
+  })
+  const reveal = (node.children || []).find((child) => child?.props?.['data-file-tab-action'] === 'reveal')
+  reveal.props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 30))
+
+  assert.equal(calls.length, 0, 'nothing is handed to the opener')
+  const said = stateUpdates.filter((value) => typeof value === 'string')
+  assert.match(String(said.at(-1)), /文件不存在/, 'the reader is told the file is gone')
+  assert.match(String(said.at(-1)), /_v13_overview\.png/, 'and which path was tried')
+})
+
+check('the Host resolves the path, and its answer is what gets opened', async () => {
+  // `stat` resolves a relative path against the addressed Session's workspace root
+  // — the same root the Sidebar's resource loader uses — and it allows absolute
+  // paths outside that workspace, which is where these artifacts usually live.
+  stateUpdates.length = 0
+  const asked = []
+  const calls = []
+  const base = fakeContext()
+  base.remote.session.openWorkspacePath = async (request) => {
+    calls.push(request)
+    return { ok: true, value: { opened: true } }
+  }
+  base.remote.workspaceFiles = {
+    stat: async (sessionId, path) => {
+      asked.push([sessionId, path])
+      return { ok: true, value: { absolutePath: 'C:/real/place/报告_v13.pptx' } }
+    },
+  }
+  const { ctx } = guardedContext(base, DECLARED)
+
+  const node = exportsOf.FileTabMenuItems({
+    tab: { contentId: exportsOf.sessionFileAddress('session-1', 'reports/报告_v13.pptx') },
+    dismiss: () => {},
+    ctx,
+  })
+  const reveal = (node.children || []).find((child) => child?.props?.['data-file-tab-action'] === 'reveal')
+  reveal.props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 30))
+
+  assert.deepEqual(asked, [['session-1', 'reports/报告_v13.pptx']], 'the Host is asked about the tab path')
+  // The Host's own answer beats the browser's guess, and the non-ASCII name takes
+  // the folder route for the reason measured in the reveal check above.
+  assert.deepEqual(calls, [{ path: 'C:/real/place' }], 'the opener gets the Host-resolved folder')
+  assert.equal(stateUpdates.at(-1), '已打开所在文件夹', 'and the status line says what happened')
+})
+
+check('an unverifiable path still opens, rather than being refused', async () => {
+  // An older Host has no `workspaceFiles` on the remote, and a transport
+  // mid-reconnect answers nothing. Verification is an improvement, not a new
+  // precondition: without it the plugin behaves exactly as it did before.
+  const calls = []
+  const base = fakeContext()
+  base.remote.session.openWorkspacePath = async (request) => {
+    calls.push(request)
+    return { ok: true, value: { opened: true } }
+  }
+  const { ctx } = guardedContext(base, DECLARED)
+  const node = exportsOf.FileTabMenuItems({
+    tab: { contentId: exportsOf.sessionFileAddress('session-1', 'reports/plain.txt') },
+    dismiss: () => {},
+    ctx,
+  })
+  const reveal = (node.children || []).find((child) => child?.props?.['data-file-tab-action'] === 'reveal')
+  reveal.props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.equal(calls.length, 1, 'the action still reaches the Host')
+  assert.equal(calls[0].path, `${fakeContext().sessions.list.getSnapshot().byId['session-1'].cwd}/reports`, 'as its folder route')
 })
 
 let failed = 0
