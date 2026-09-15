@@ -1070,7 +1070,7 @@ check('the file menu reaches the Host through the same guard', async () => {
   }
   const { ctx } = guardedContext(base, DECLARED)
 
-  const address = exportsOf.sessionFileAddress('session-1', 'reports/报告 2026.pptx')
+  const address = exportsOf.sessionFileAddress('session-1', 'reports/report 2026.pptx')
   const node = exportsOf.FileTabMenuItems({ tab: { contentId: address }, dismiss: () => {}, ctx })
   const buttons = (node.children || []).filter((child) => child !== null && child.props?.onClick !== undefined)
   assert.equal(buttons.length, 2, 'both actions are offered for a file tab')
@@ -1078,8 +1078,62 @@ check('the file menu reaches the Host through the same guard', async () => {
   await new Promise((resolve) => setTimeout(resolve, 20))
 
   assert.equal(calls.length, 2, 'both actions reached the Host')
-  assert.deepEqual(calls[0], { path: 'reports/报告 2026.pptx' }, 'the default-application action sends the decoded path')
-  assert.deepEqual(calls[1], { path: 'reports/报告 2026.pptx', action: 'reveal' }, 'the reveal action names the action')
+  // The RPC carries no session, so the browser has to hand it something absolute:
+  // a workspace-relative path would be resolved against the `dsh web` process's
+  // working directory on the far side, which is a different file or none at all.
+  const workspace = fakeContext().sessions.list.getSnapshot().byId['session-1'].cwd
+  assert.deepEqual(calls[0], { path: `${workspace}/reports/report 2026.pptx` }, 'the open action sends a resolved path')
+  assert.deepEqual(calls[1], { path: `${workspace}/reports/report 2026.pptx`, action: 'reveal' }, 'the reveal action names the action')
+})
+
+check('a reveal Explorer cannot perform opens the folder instead', async () => {
+  // `revealNativePath` hands Explorer a percent-encoded `file:///` URL, and
+  // Explorer does not decode it: measured on this machine, `plain.txt` and
+  // `with space.txt` still open their folder while `暑期科研汇报_v13.pptx` and
+  // `中文目录\report.pptx` produce no window at all. The Host reports success
+  // either way, so the browser is the only place that can notice — and it opens
+  // the containing folder through the same RPC rather than doing nothing.
+  const calls = []
+  const base = fakeContext()
+  base.remote.session.openWorkspacePath = async (request) => {
+    calls.push(request)
+    return { ok: true, value: { opened: true } }
+  }
+  const { ctx } = guardedContext(base, DECLARED)
+  const workspace = base.sessions.list.getSnapshot().byId['session-1'].cwd
+
+  const render = (path) => exportsOf.FileTabMenuItems({
+    tab: { contentId: exportsOf.sessionFileAddress('session-1', path) },
+    dismiss: () => {},
+    ctx,
+  })
+  const revealOf = (node) => (node.children || []).find((child) => child?.props?.['data-file-tab-action'] === 'reveal')
+
+  revealOf(render('reports/暑期科研汇报_v13.pptx')).props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(calls.at(-1), { path: `${workspace}/reports` }, 'a non-ASCII name opens its folder, with no action')
+
+  revealOf(render('reports/plain.txt')).props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(calls.at(-1), { path: `${workspace}/reports/plain.txt`, action: 'reveal' }, 'an ASCII path still gets a real reveal')
+
+  // The nested-directory case is the one a "is the file name ASCII?" shortcut
+  // would get wrong: here the *directory* carries the multi-byte escape.
+  revealOf(render('reports/中文目录/plain.txt')).props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(calls.at(-1), { path: `${workspace}/reports/中文目录` }, 'a non-ASCII directory opens its folder too')
+})
+
+check('the reveal rule and the folder cut are what the measurement says', () => {
+  assert.equal(exportsOf.hostRevealCanFind('C:/a/b.txt'), true, 'printable ASCII travels intact')
+  assert.equal(exportsOf.hostRevealCanFind('C:/a/报告.txt'), false, 'a multi-byte escape does not')
+  assert.equal(exportsOf.hostRevealCanFind('C:/a/with space.txt'), true, 'a space survives, as measured')
+  assert.equal(exportsOf.hostRevealCanFind('C:/a/comma,file.txt'), true, 'and so does a comma')
+  assert.equal(exportsOf.parentFolderOf('C:/a/b/c.txt'), 'C:/a/b', 'the folder above a file')
+  assert.equal(exportsOf.parentFolderOf('C:/a/b/'), 'C:/a', 'a trailing separator is not a name')
+  assert.equal(exportsOf.parentFolderOf('C:/a'), 'C:/', 'a drive root keeps its separator')
+  assert.equal(exportsOf.parentFolderOf('/a'), '/', 'so does a POSIX root')
+  assert.equal(exportsOf.parentFolderOf('b.txt'), undefined, 'a bare name has no folder to name')
 })
 
 let failed = 0

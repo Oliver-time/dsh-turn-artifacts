@@ -26,6 +26,7 @@
 2. **多一行「脚本产物」**。收尾消息末尾列出行内不可见、但本轮确实产出的文件 chip，点击直接打开。只列文件工具没写过、纯由命令产出的那些，不与官方那行重复。
 3. **侧边栏文件标签的右键菜单多两项**（v0.5.0）：在侧边栏里打开文件后，右键标签上的文件名，除了侧边栏自带的「关闭」，还有 **用默认软件打开** 和 **打开文件所在路径**。
 4. **打开会话不再卡**（v0.5.1）：历史填充改成带停顿、有预算、单飞，链接点击也从「静默失败」改成「失败会兜底、会留日志」。详见 [修过的问题（v0.5.1）](#修过的问题v051蓝字点不动--整个-dsh-变卡)。
+5. **右键菜单的动作真的会到达桌面，失败也看得见**（v0.5.2）：相对路径先补成绝对路径；中文文件名的「打开文件所在路径」改为打开所在文件夹（Host 的 reveal 对非 ASCII 名字静默失败，实测见下文）；状态行会先显示「正在打开…」再显示结果。
 
 ### 右键菜单这两项怎么实现的
 
@@ -38,7 +39,46 @@
 | 用默认软件打开 | `ctx.remote.session.openWorkspacePath({ path })` |
 | 打开文件所在路径 | `ctx.remote.session.openWorkspacePath({ path, action: 'reveal' })` |
 
-文件路径从**标签地址**反解：文件标签的 `contentId` 就是 `dsh-resource://file/session/<sessionId>/<path>`，插件自己解析（`parseFileAddress`），不依赖任何注册表。非文件标签（指南页等）解析返回 `undefined`，两项就不显示 —— 不会给你一堆点不动的选项。动作失败会在菜单里回一行可见提示，而不是静默。
+文件路径从**标签地址**反解：文件标签的 `contentId` 就是 `dsh-resource://file/session/<sessionId>/<path>`，插件自己解析（`parseFileAddress`），不依赖任何注册表。非文件标签（指南页等）解析返回 `undefined`，两项就不显示 —— 不会给你一堆点不动的选项。
+
+两件事是踩过坑之后才做对的（v0.5.2）：
+
+1. **地址里的路径先补成绝对路径。** `session.openWorkspacePath` 这个 RPC **不带 session**，Host 端无法解析任何相对路径 —— 它把相对路径交给 `Invoke-Item`，于是相对的是 `dsh web` 进程的工作目录。所以插件先用该 session 的工作区根（`sessions.list` 快照里的 `cwd`）把地址里的路径拼成绝对路径，再发出去。
+2. **动作失败必须看得见。** 菜单原来在点击瞬间就 `dismiss()`，于是那条状态行永远显示不出来 —— 成功和失败长得一模一样：什么都没发生。现在先显示「正在打开…」，拿到结果后显示结果，停 `STATUS_LINGER_MS`（1.1 秒）再关菜单。
+
+### 修过的问题（v0.5.2）：中文文件名「打开文件所在路径」没反应
+
+用户报「点击打开文件所在路径没用」，而同菜单的「用默认软件打开」正常。这个组合本身就是线索：两项走的是同一个 RPC，只差一个 `action: 'reveal'`，所以问题在 Host 的 reveal 实现里。
+
+真机复现（Windows + Chrome，写了一个直接调用 Host 函数的探针，并用 shell 自己的 COM 自动化去问「事后哪个资源管理器窗口存在」）：
+
+```
+revealNativePath 实际执行的 argv（用假 runner 抓的）：
+  explorer.exe "/select," "file:///C:/…/_%E6%96%87%E6%A1%A3/%E6%9A%91…_v13.pptx"
+```
+
+`revealNativePath` 并不把**文件系统路径**交给资源管理器：它用 `pathToFileURL()` 生成 `file:///` URL、做百分号编码，然后交给 `explorer.exe /select,`。而资源管理器**不按浏览器的方式解码**。逐例实测（每次一个全新的、没有别的窗口打开的目录）：
+
+| 文件名 | 原样调用（编码后的 URL） | 改传原生路径 | 改为「打开所在文件夹」 |
+| --- | --- | --- | --- |
+| `plain.txt` | 打开所在目录 ✅ | ✅ | ✅ |
+| `with space.txt`（`%20`） | 打开所在目录 ✅ | ❌ | ✅ |
+| `comma,file.txt`（`%2C`） | 打开所在目录 ✅ | ❌ | ✅ |
+| `暑期科研汇报_v13.pptx`（`%E6…`） | **一个窗口都没有** ❌ | ✅ | ✅ |
+| `中文目录\report.pptx` | **一个窗口都没有** ❌ | ✅ | ✅ |
+
+结论：**单字节转义活得下来，多字节转义必死** —— 也就是说，凡是中文（以及任何非 ASCII）名字，这个功能一路静默失败。而 Host 无论如何都回 `{opened: true}`，所以「失败」和「成功」在调用方看来完全一样。
+
+这是 **Host（`@deepseek-ai/dsh-native-command` 的 `revealNativePath`）的缺陷**，不是插件的；顺带一提，官方「presented 文件 → 在文件夹中显示」（`/api/present.open?action=reveal`）走的是同一个函数，所以中文名文件同样点不动（这条是读代码得出的：它解析出绝对 Host 路径后调的正是 `sessionController.openWorkspacePath({ path, action })`）。
+
+插件侧的修法**不新增任何原生执行面**，全部走同一个受支持的 RPC：
+
+- 路径是**可打印 ASCII** → 照旧 `{ path, action: 'reveal' }`，文件会被选中。
+- 路径含**非 ASCII** → 改传**所在目录**、不带 `action`，走 Host 的 `Invoke-Item -LiteralPath`（PowerShell 字面路径，中文没问题），资源管理器打开该目录。状态行显示「已打开所在文件夹」。
+
+代价是这种情况下**文件不会被预先选中**（资源管理器会停在那个目录）。这是刻意的取舍：能确定被选中，和只能打开目录，都好过点了没反应。等上游修好 `revealNativePath`（把原生路径交给 explorer，或按资源管理器的方式处理编码），这一层可以删掉。
+
+真机验证（Chrome + CDP，真实鼠标右键标签）：菜单三项 `["关闭","用默认软件打开","打开文件所在路径"]`；点第三项后状态行显示 **「已在资源管理器中定位」**，随后菜单关闭，资源管理器真的打开了那个目录（用 COM 枚举窗口确认，测完把探针开的窗口都关掉）。
 
 ### 点击链接一律先进侧边栏
 
@@ -315,6 +355,7 @@ DSH 从 0.1.5-rc.2 起带了一批侧边栏插件（`dsh-client-ui-sidebar`、`-
 
 ## 版本记录
 
+- **v0.5.2** — 修「打开文件所在路径」对中文文件名没反应。根因在 Host：`revealNativePath`（Windows）把 `pathToFileURL()` 生成的百分号编码 URL 交给 `explorer.exe /select,`，而资源管理器不解码多字节转义 —— 逐例实测见上文，中文名一个窗口都不会出现，而 Host 仍回 `{opened:true}`。插件侧不新增原生执行面：非 ASCII 路径改为「打开所在文件夹」（同一 RPC、不带 `action`，走 PowerShell 字面路径）。同时修两件事：地址里的相对路径先按 session 工作区根补成绝对路径（该 RPC 不带 session，Host 无法解析相对路径）；状态行不再被 `dismiss()` 当场吃掉，失败与成功终于有区别。
 - **v0.5.1** — 修两个真机报回来的症状：**(1) 蓝字点不动** —— `ctx.sidebarRight` 在 cordis 的 Context Proxy 上不是 `undefined` 而是**抛异常**（未在 `inject` 声明的属性，读取即抛），点击死在 `sidebarOpener` 里；同类问题还有 `ctx.off?.(...)`，让每次连接重置的回滚都抛。两者都改用 `ctx.get(name)` / `ctx.on()` 返回的 disposer。**(2) 整个 DSH 很卡** —— 历史填充原来不喘气地连拉 60 页，实测填充期间每 2.5 秒有约 2.2 秒占着主线程；现在改成页间停顿（按实测耗时成比例退避）、`FILL_NODE_BUDGET` 预算封顶、单飞且切走即放弃（实测同窗口阻塞降到 0.2–0.7 秒，随后归零）。另外把「静默失败」改成「兜底 + 每个名字只 warn 一次」。测试从 24 项加到 32 项，新增 `guardedContext()`（按真实 Proxy 语义读未声明属性即抛）。
 - **v0.5.0** — 侧边栏文件标签右键菜单加两项（用默认软件打开 / 打开文件所在路径），并把解析优先级反转，使所有被索引到的提及一律先进侧边栏，而不是弹外部程序。同时修掉包裹 `chatFileMentions` 依赖加载顺序的问题（服务晚注册时改为事件驱动补装，不再只依赖 apply 那一刻）。真机验证：在 Chrome 页面内调用菜单组件，两项渲染正确、两个动作分别发出 `{path}` 与 `{path, action:"reveal"}`。
 - **v0.4.2** — 重新开启历史自动填充。v0.4.0/v0.4.1 关闭它是误判：那段时间「老对话里文件不再变蓝」正是关掉它造成的（证据在 50 条窗口之外，插件看不见）。当时归因的「对话空白」真因是 `state` 崩溃，已修。真浏览器实测：50 轮会话 743 个行内代码块正常渲染、33 个提及成链、零异常。
@@ -337,7 +378,7 @@ DSH 从 0.1.5-rc.2 起带了一批侧边栏插件（`dsh-client-ui-sidebar`、`-
 ```bash
 npm test                      # 等于下面三条
 node test/host.mjs            #  5 项：Host 半部的 section 名字/顺序/内容、status 服务、版本一致
-node test/harness.mjs         # 32 项：客户端 bundle 的契约、证据规则、匹配优先级、侧边栏地址、autofill 节奏、cordis Proxy 守卫
+node test/harness.mjs         # 34 项：客户端 bundle 的契约、证据规则、匹配优先级、侧边栏地址、autofill 节奏、cordis Proxy 守卫、reveal 规则
 node test/autofill-off.mjs    #  3 项：历史填充必须在启动时接上（关掉它会让历史链接静默失效）
 ```
 
@@ -357,7 +398,15 @@ node test/browser-shot.mjs "<地址>" "<会话标题>" out.png   # 打开会话�
 node test/live-mention.mjs "<地址>" "<会话标题>" [out.png]  # 打开会话、测填充的 longtask 与 DOM 重量、翻页直到出现提及、点第一个、报告侧边栏内容
 node test/live-chip.mjs    "<地址>" "<会话标题>" [out.png]  # 同上，但点的是「脚本产物」那一行的 chip
 node test/live-older.mjs   "<地址>" "<会话标题>"            # 单独检查「加载更早」控件本身（元素、坐标、点击后节点数）
+node test/live-reveal.mjs  "<地址>" "<会话标题>" [--pptx]   # 真实右键标签 → 点「打开文件所在路径」→ 读状态行 + 用 COM 枚举资源管理器窗口确认
 node test/live-recon.mjs   "<地址>" [out.png]               # 只做侦察：首屏节点数、longtask 台账、页面全局对象、控制台
+```
+
+不经过浏览器也能测 Host 的原生动作（这两个会真的打开资源管理器窗口，跑完会自己关掉）：
+
+```bash
+node test/reveal-probe.mjs  "<绝对路径>" [open|reveal]   # 直接调用 Host 的 revealNativePath/openNativePath，打印结果与错误
+node test/reveal-matrix.mjs                              # 自建一批文件名（ASCII/空格/逗号/中文/中文目录）逐例对比三种调用方式
 ```
 
 这几个脚本用 `test/cdp.mjs` 直接走 Chrome DevTools 协议（不需要装 puppeteer）。**这不是洁癖**：这个插件曾经在离线测试全绿的情况下把线上功能弄坏 —— 包裹时机依赖加载顺序、菜单没在真机点过、`ctx.sidebarRight` 在真机上抛异常而离线 fake 上返回 `undefined`。能点一遍就别只跑单测。
@@ -388,6 +437,8 @@ test/                 自测与诊断脚本
 ## English
 
 **What it does.** In the DeepSeek Harness Web GUI, a file name written as Markdown inline code becomes a clickable link — but the shipped vocabulary comes only from successful `write` / `edit` / mutating `str_replace_editor` calls. A file that only a terminal command produced (a `.pptx` from python-pptx, a `.png` chart, an `.mp4` render) can never be linked, no matter how it is spelled. This plugin supplies that missing vocabulary instead of patching the shipped one: it indexes the paths that appeared in the current turn's tool calls and tool results and appends a second resolver to the `chatFileMentions` service, so the shipped vocabulary stays authoritative and only inert tokens get answered. It also adds a "script artifacts" row at the end of a turn, adds two native actions to the right Sidebar's file-tab menu, routes every link it answers into that Sidebar, and — unrelatedly — fills a session's history window on open.
+
+**0.5.2 fixes the third reported bug.** "Open containing folder" did nothing for Chinese file names while "open with the default app" worked — same RPC, one `action` apart, so the fault was in the Host's reveal. On Windows `revealNativePath` does not hand Explorer a filesystem path: it builds a percent-encoded `file:///` URL and runs `explorer.exe /select, <that>`, and Explorer does not decode it. Measured case by case: `plain.txt`, `with space.txt` (`%20`) and `comma,file.txt` (`%2C`) still open their folder, while `暑期科研汇报_v13.pptx` and `中文目录\report.pptx` produce **no window at all** — and the Host answers `{opened: true}` regardless, so failure and success look identical to the caller. The plugin adds no native capability: a non-ASCII path asks for its **containing folder** through the same RPC (no `action`, which the Host opens with PowerShell's `Invoke-Item -LiteralPath` and which handles every name above). It also resolves a workspace-relative address path against the session workspace before sending it — the RPC carries no session, so a relative path would be resolved against the `dsh web` process's own working directory — and it no longer dismisses the menu before the result line has been drawn.
 
 **0.5.1 fixes two reported bugs.** *Dead links:* reading `ctx.sidebarRight` on a cordis client context does not return `undefined`, it **throws** (`cannot get property "sidebarRight" without inject`) because the service is not in this plugin's `inject` — and it throws on the property read, so `?.` and `try` in the caller are no help. Every click died inside `sidebarOpener`. `ctx.off?.(...)` had the same shape and made every connection reset throw out of the mention wrapper's rollback. Both now go through `ctx.get(name)` and the disposer `ctx.on()` returns. *Slowness:* the history fill used to pull up to 60 pages back to back — measured in a real browser, ~2.2 s of every 2.5 s window was a long task for about seven seconds, leaving a 34.6k-node page behind. It is now paced between pages (backing off in proportion to what the last page cost), capped by a DOM budget, single-flight, and abandoned when the reader switches sessions; the same measurement is now 0.2–0.7 s per window and then zero. Deferred history still links as you page back to it, because every page indexed feeds the vocabulary.
 
