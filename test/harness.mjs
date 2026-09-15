@@ -546,6 +546,10 @@ function fakeSessions(initial) {
   return {
     sessions,
     listenerCount: () => listeners.size,
+    /** Fire the subscription without changing the selection, as the store does. */
+    notify() {
+      for (const listener of listeners) listener()
+    },
     setCurrent(id) {
       state.current = id
       for (const listener of listeners) listener()
@@ -576,6 +580,26 @@ function autofillContext(sessions) {
 /** Let the fill's promise chain run to completion. */
 const settle = () => new Promise((resolve) => setImmediate(resolve))
 
+/**
+ * Wait until a fake session stops paging, or a deadline passes.
+ *
+ * The fill is paced now — a frame plus a pause between pages — so a single
+ * `settle()` would only ever observe its first page. Waiting for the loop to
+ * finish is also the check that pacing does not wedge it.
+ *
+ * @param session - the fake session to watch.
+ * @param timeoutMs - how long to wait before giving up.
+ * @returns true when the session reached the start of its history.
+ */
+async function waitForFill(session, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (session.hasMore !== true) return true
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  return session.hasMore !== true
+}
+
 check('history autofill pages an opened session back to the start', async () => {
   const sessions = fakeSessions({ s1: fakeSession('s1', 4) })
   assert.equal(await exportsOf.fillHistory(sessions, 's1', undefined), 4, 'every remaining page is pulled')
@@ -590,6 +614,43 @@ check('history autofill pages an opened session back to the start', async () => 
     7,
     'the page cap bounds a huge log',
   )
+})
+
+check('the fill paces itself between pages instead of running flat out', async () => {
+  // The 0.5.0 fill pulled sixty pages back to back; measured in a real browser it
+  // held the main thread for ~2.2s of every 2.5s and left a 34.6k-node page
+  // behind. Pacing is the brake, so it has to be observable, not incidental.
+  const order = []
+  const sessions = fakeSessions({ s1: fakeSession('s1', 3) })
+  const pages = await exportsOf.fillHistory(sessions, 's1', undefined, {
+    afterPage: async (page, elapsed) => {
+      order.push([page, typeof elapsed === 'number' && elapsed >= 0])
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    },
+    shouldContinue: () => true,
+  })
+  assert.equal(pages, 3, 'every page still arrives')
+  assert.deepEqual(order, [[1, true], [2, true], [3, true]], 'each page is followed by its pause')
+
+  const stopped = fakeSessions({ s1: fakeSession('s1', 9) })
+  const pulled = await exportsOf.fillHistory(stopped, 's1', undefined, { shouldContinue: () => false })
+  assert.equal(pulled, 0, 'a refusal before the first page pulls nothing')
+  assert.equal(stopped.sessions.get('s1').loadCalls, 0, 'and never touches the transport')
+
+  const half = fakeSessions({ s1: fakeSession('s1', 9) })
+  let seen = 0
+  const halfPulled = await exportsOf.fillHistory(half, 's1', undefined, {
+    shouldContinue: () => (seen += 1) <= 2,
+  })
+  assert.equal(halfPulled, 2, 'a refusal mid-fill stops it there')
+})
+
+check('the pause grows with what the last page cost', () => {
+  assert.equal(exportsOf.fillPause(0), 250, 'a free page still yields the minimum pause')
+  assert.equal(exportsOf.fillPause(100), 550, 'an expensive page buys proportionally more')
+  assert.equal(exportsOf.fillPause(99_999), 4000, 'and the back-off is capped so progress continues')
+  assert.equal(exportsOf.fillPause(undefined), 250, 'an unmeasurable page is treated as free')
+  assert.equal(exportsOf.fillPause(-5), 250, 'a nonsensical measurement cannot shorten the pause')
 })
 
 check('history autofill stops on a stalled page and tolerates what it cannot page', async () => {
@@ -623,14 +684,44 @@ check('mounting the plugin fills the current session and stops on disposal', asy
 
   await settle()
   assert.equal(sessions.listenerCount(), 1, 'the plugin subscribes to the session list')
+  assert.equal(await waitForFill(sessions.sessions.get('s1')), true, 'the fill finishes on its own')
   assert.equal(sessions.sessions.get('s1').loadCalls, 3, 'the current session is paged back')
 
   sessions.setCurrent('s2')
-  await settle()
+  assert.equal(await waitForFill(sessions.sessions.get('s2')), true, 'the next session is filled too')
   assert.equal(sessions.sessions.get('s2').loadCalls, 2, 'a session opened later is paged too')
 
   ctx.disposeAll()
   assert.equal(sessions.listenerCount(), 0, 'disposal releases the subscription')
+})
+
+check('one session is filled at a time, and a switch abandons the fill', async () => {
+  // Two rules that 0.5.0 lacked. The list store notifies on every selection and
+  // membership change, and the old code claimed a session only after its fill
+  // resolved, so a notification arriving mid-fill started a second full fill of the
+  // same conversation on top of the first. And a fill kept paging a conversation
+  // the reader had already left, which is pure cost on the page they are watching.
+  const sessions = fakeSessions({ s1: fakeSession('s1', 40), s2: fakeSession('s2', 1) })
+  const ctx = autofillContext(sessions)
+  exportsOf.apply(ctx)
+
+  // Notify repeatedly while the first fill is still running.
+  for (let i = 0; i < 5; i += 1) {
+    sessions.notify()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  const first = sessions.sessions.get('s1')
+  assert.equal(first.openCalls, 1, 'the repeated notifications do not start a second fill')
+
+  sessions.setCurrent('s2')
+  await waitForFill(sessions.sessions.get('s2'))
+  const abandonedAt = first.loadCalls
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  assert.equal(first.loadCalls, abandonedAt, 'the abandoned fill stops paging the session left behind')
+  assert.ok(abandonedAt < 40, 'it really was abandoned mid-history')
+  assert.equal(sessions.sessions.get('s2').loadCalls, 1, 'the new session is filled instead')
+
+  ctx.disposeAll()
 })
 
 check('history autofill reaches a session through either lookup', async () => {
@@ -836,6 +927,161 @@ check('the artifact row routes into the sidebar when one exists', () => {
   assert.match(opened[0], /^dsh-resource:\/\/file\/session\/session-1\//, 'it opens a file address, not a bare path')
 })
 
+/**
+ * A context that behaves like the real one: reading an undeclared property throws.
+ *
+ * This is the single most expensive shape to get wrong. A cordis client context is
+ * a Proxy whose `get` throws `cannot get property "<name>" without inject` for any
+ * service the calling fiber did not declare — the throw happens on the *read*, so
+ * `ctx.sidebarRight?.open`, `ctx.off?.(...)`, and even a `try` around the caller's
+ * own statement all fail the same way. Version 0.5.0 read two such properties and
+ * shipped both bugs: every mention click died inside `sidebarOpener`, and every
+ * connection reset threw out of the mention wrapper's rollback.
+ *
+ * @param ctx - a plain fake context to wrap.
+ * @param allowed - names the plugin is allowed to read directly.
+ * @returns the guarded context, plus a record of what was asked for.
+ */
+function guardedContext(ctx, allowed) {
+  const asked = []
+  const guarded = new Proxy(ctx, {
+    get(target, property, receiver) {
+      if (typeof property === 'symbol' || property.startsWith('_') || Reflect.has(target, property)) {
+        return Reflect.get(target, property, receiver)
+      }
+      asked.push(property)
+      if (allowed.includes(property)) return target[property]
+      throw new Error(`cannot get property "${property}" without inject`)
+    },
+  })
+  return { ctx: guarded, asked }
+}
+
+/** The services this plugin declares, mirroring its own `inject` export. */
+const DECLARED = ['slots', 'uiConversation', 'remote', 'sessions']
+
+check('an undeclared service is read through ctx.get, never as a property', () => {
+  // The regression that killed every mention click. `sidebarRight` is provided by
+  // the sidebar package and is deliberately absent from this plugin's `inject` —
+  // declaring it would make the whole plugin wait for a sidebar that headless and
+  // older deployments never provide — so the only safe spelling is `ctx.get`.
+  const opened = []
+  const base = fakeContext()
+  base.services.set('sidebarRight', { openResource: (address) => opened.push(address) })
+  const { ctx } = guardedContext(base, DECLARED)
+
+  assert.throws(() => ctx.sidebarRight, /without inject/, 'the real guard is what this fake models')
+  const found = exportsOf.optionalService(ctx, 'sidebarRight')
+  assert.equal(typeof found?.openResource, 'function', 'ctx.get still finds it')
+  assert.equal(exportsOf.optionalService(ctx, 'nothing-registers-this'), undefined, 'an absent service reads as undefined, not as a throw')
+
+  shipChatFileMentions(base, [])
+  exportsOf.apply(ctx)
+  const { data } = fold(base, reportTurn())
+  const selected = base.slotDeclaration.select({ ...owner(data), sessionId: 'session-1' })
+  assert.ok(selected !== null)
+  selected.openInSidebar('out/chart.png')
+  assert.equal(opened.length, 1, 'the sidebar route survives the guard')
+})
+
+check('a mention click opens the sidebar, and never dies inside the opener', () => {
+  const opened = []
+  const base = fakeContext()
+  base.services.set('sidebarRight', { openResource: (address) => opened.push(address) })
+  base.services.set('chatFileMentions', { forClosing: () => undefined })
+  const { ctx } = guardedContext(base, DECLARED)
+  exportsOf.apply(ctx)
+  // Fold the report turn into this context: the artifact index is per definition
+  // instance, so a check must not borrow another check's fold.
+  const { data } = fold(base, reportTurn())
+  const pptx = data.value.artifacts.find((path) => path.endsWith('.pptx'))
+  assert.ok(pptx !== undefined, 'the report turn indexed the pptx')
+  const token = pptx.split(/[\\/]/).pop()
+
+  const ownerShape = {
+    turn: { turn: 1, data: { get: () => undefined } },
+    seq: 10,
+    sessionId: 'session-1',
+    openFile: () => {},
+  }
+  const closing = base.services.get('chatFileMentions').forClosing(ownerShape, 'session-1')
+  const mention = closing.resolve(token)
+  assert.ok(mention !== undefined, 'the pptx resolves as a mention')
+  mention.open()
+  assert.equal(opened.length, 1, 'the click reaches the sidebar')
+  assert.match(opened[0], /^dsh-resource:\/\/file\/session\/session-1\//)
+})
+
+check('a click the sidebar refuses falls back instead of going silent', () => {
+  // `openResource` throws whenever no session surface is mounted — the column is
+  // not rendered at all — or when no tab type claims the address. Swallowing that
+  // is what made 0.5.0's links indistinguishable from a click that never arrived.
+  const fallbacks = []
+  const base = fakeContext()
+  base.services.set('sidebarRight', {
+    openResource: () => {
+      throw new Error('sidebarRight: no session surface is mounted')
+    },
+  })
+  base.services.set('chatFileMentions', { forClosing: () => undefined })
+  const { ctx } = guardedContext(base, DECLARED)
+  exportsOf.apply(ctx)
+  const { data } = fold(base, reportTurn())
+  const pptx = data.value.artifacts.find((path) => path.endsWith('.pptx'))
+  const token = pptx.split(/[\\/]/).pop()
+
+  const ownerShape = {
+    turn: { turn: 1, data: { get: () => undefined } },
+    seq: 10,
+    sessionId: 'session-1',
+    openFile: (path) => {
+      fallbacks.push(path)
+    },
+  }
+  const closing = base.services.get('chatFileMentions').forClosing(ownerShape, 'session-1')
+  const mention = closing.resolve(token)
+  assert.ok(mention !== undefined, 'the pptx resolves as a mention')
+  mention.open()
+  assert.equal(fallbacks.length, 1, 'the chat view opener takes over')
+  assert.match(fallbacks[0], /v13\.pptx$/, 'with resolved absolute path')
+})
+
+/**
+ * Capture what the plugin reports, rather than letting it scroll past.
+ *
+ * The plugin warns once per broken thing instead of failing silently, which is the
+ * whole point of `reportOnce` — a click that goes nowhere must leave a trace. Here
+ * the trace is an assertion: every message distinct, so the dedup contract holds.
+ */
+const warnings = []
+console.warn = (...args) => {
+  warnings.push(args.map((value) => String(value)).join(' '))
+}
+
+check('the file menu reaches the Host through the same guard', async () => {
+  // The menu's two items run on the real context — `inject: () => ({ ctx })` — so
+  // they hit the same Proxy the mention opener did. Both must reach the remote
+  // rather than throwing on the way there.
+  const calls = []
+  const base = fakeContext()
+  base.remote.session.openWorkspacePath = async (request) => {
+    calls.push(request)
+    return { ok: true, value: { opened: true } }
+  }
+  const { ctx } = guardedContext(base, DECLARED)
+
+  const address = exportsOf.sessionFileAddress('session-1', 'reports/报告 2026.pptx')
+  const node = exportsOf.FileTabMenuItems({ tab: { contentId: address }, dismiss: () => {}, ctx })
+  const buttons = (node.children || []).filter((child) => child !== null && child.props?.onClick !== undefined)
+  assert.equal(buttons.length, 2, 'both actions are offered for a file tab')
+  for (const button of buttons) button.props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+
+  assert.equal(calls.length, 2, 'both actions reached the Host')
+  assert.deepEqual(calls[0], { path: 'reports/报告 2026.pptx' }, 'the default-application action sends the decoded path')
+  assert.deepEqual(calls[1], { path: 'reports/报告 2026.pptx', action: 'reveal' }, 'the reveal action names the action')
+})
+
 let failed = 0
 for (const { name, fn } of checks) {
   opened.length = 0
@@ -848,5 +1094,17 @@ for (const { name, fn } of checks) {
     console.log(`     ${error instanceof Error ? error.message : String(error)}`)
   }
 }
-console.log(`\n${String(checks.length - failed)}/${String(checks.length)} checks passed`)
+
+if (warnings.length > 0) {
+  const unique = new Set(warnings)
+  if (unique.size !== warnings.length) {
+    failed += 1
+    console.log(`FAIL the plugin reports each broken thing once`)
+    console.log(`     ${String(warnings.length)} reports, ${String(unique.size)} distinct`)
+  } else {
+    console.log(`ok   the plugin reports each broken thing once (${String(warnings.length)} distinct)`)
+  }
+}
+
+console.log(`\n${String(checks.length + (warnings.length > 0 ? 1 : 0) - failed)}/${String(checks.length + (warnings.length > 0 ? 1 : 0))} checks passed`)
 process.exitCode = failed === 0 ? 0 : 1

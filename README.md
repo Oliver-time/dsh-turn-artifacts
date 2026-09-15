@@ -25,6 +25,7 @@
 1. **脚本产物可点**（插件的主职）。收尾正文里用行内代码提到本轮产出过的文件，就能点开，即使它只被脚本碰过。
 2. **多一行「脚本产物」**。收尾消息末尾列出行内不可见、但本轮确实产出的文件 chip，点击直接打开。只列文件工具没写过、纯由命令产出的那些，不与官方那行重复。
 3. **侧边栏文件标签的右键菜单多两项**（v0.5.0）：在侧边栏里打开文件后，右键标签上的文件名，除了侧边栏自带的「关闭」，还有 **用默认软件打开** 和 **打开文件所在路径**。
+4. **打开会话不再卡**（v0.5.1）：历史填充改成带停顿、有预算、单飞，链接点击也从「静默失败」改成「失败会兜底、会留日志」。详见 [修过的问题（v0.5.1）](#修过的问题v051蓝字点不动--整个-dsh-变卡)。
 
 ### 右键菜单这两项怎么实现的
 
@@ -42,6 +43,65 @@
 ### 点击链接一律先进侧边栏
 
 0.1.5 起核心把 `openFile` 换成了侧边栏路由，但**官方词表里 `present` 工具声明过的文件仍然直接调原生打开器**（弹 PowerPoint）。本插件对自己的解析器采取**优先级而非兜底**：凡是插件索引到的路径，先由插件回答，统一走 `dsh-resource://file/…` 进侧边栏；其余 token 仍由官方解析器决定。这样「所有文件都先进侧边栏」才成立，之后在侧边栏里再用右键菜单决定要不要交给外部程序。
+
+### 修过的问题（v0.5.1）：蓝字点不动 + 整个 DSH 变卡
+
+v0.5.0 发出去之后，实际使用报回来两个症状：**链接是蓝的、点了没反应**，以及**整个 DSH 非常卡**。两个都复现了，根因不同，都修在 0.5.1。
+
+#### 一、点了没反应：`ctx.sidebarRight` 不是 `undefined`，是**抛异常**
+
+客户端 Context 是一个 Proxy：**读一个没有在 `inject` 里声明过的服务名，会在「读属性」这一刻直接抛** `cannot get property "X" without inject`。抛出点在求值属性本身，所以 `?.`、`??`、以及调用方自己写的 `try` 都救不了 —— 表达式还没走完就已经抛出去了。
+
+v0.5.0 的 `sidebarOpener` 是这么写的：
+
+```js
+const sidebar = ctx.sidebarRight;   // ← 抛在这里，不是返回 undefined
+```
+
+于是**每一次点击都在 `sidebarOpener` 里炸掉**，`onClick` 当场中断 —— 表现就是「蓝字，但点了没反应」。真机页面上抓到的原始异常：
+
+```
+Uncaught Error: cannot get property "sidebarRight" without inject
+    at sidebarOpener (…/dsh-turn-artifacts/lib/client.js)
+```
+
+修法是改用 `ctx.get('sidebarRight')`：这是 cordis 给「可能存在、也可能不存在」的服务准备的正规入口（本插件本来就用它读 `chatFileMentions`）。**不能**把 `sidebarRight` 写进 `inject`：那样在没有右侧边栏的部署（更老的 DSH、headless profile）上，整个插件都会去等这个永远不会出现的服务，等于把主功能（链接）一起赔进去。
+
+同一个坑还有第二处：`ctx.off?.(...)`。客户端 Context 上没有 `off`，读它同样抛 —— 后果是**每次连接重置**时包裹器的回滚都会抛（控制台里的 `[connection] connection sink threw: Error: cannot get property "off" without inject`），而回滚后面的「重新安装包裹器」永远执行不到。现在改成调用 `ctx.on()` 返回的 disposer。
+
+回归测试：`test/harness.mjs` 里的 `guardedContext()` 按真实 Proxy 的语义包住 fake ctx —— 读未声明属性就抛 —— 然后断言：读 `ctx.sidebarRight` 会抛、`ctx.get('sidebarRight')` 拿得到、提及点击能进侧边栏、边栏拒绝时有兜底、右键菜单两项能到达 Host。**没有这层 fake，这类 bug 在离线测试里永远是绿的**，因为普通对象读不存在的属性只会给 `undefined`。
+
+#### 二、非常卡：历史填充按住主线程不松手
+
+v0.5.0 的填充是**不喘气**地连续拉页：`while (pages < 60) await session.loadOlder()`。每拉一页都要把整段对话重新投影、重新渲染，所以开销随日志长度平方增长，页面 DOM 也跟着一起涨，而且涨上去就不再下来。
+
+真机实测（同一个 1006 步的真实会话，Chrome + CDP，`PerformanceObserver` 统计 longtask）：
+
+| 配置 | 结束后 DOM 节点 | 每 2.5 秒窗口的主线程阻塞 |
+| --- | --- | --- |
+| 不装插件 | 2 254 | 238 ms（仅首屏），之后 **0** |
+| v0.5.0 | 34 586 | 2 263 / 2 310 / 2 037 ms，持续约 7 秒 |
+| v0.5.1 | 13 482 | 659 / 674 / 282 / 236 / 317 ms，随后 **0** |
+
+也就是说 v0.5.0 在填充的那几秒里，**每 2.5 秒有 2.2 秒占着主线程** —— 这时候点什么都没反应，跟第一个 bug 叠加在一起，就成了「又卡又点不动」。
+
+v0.5.1 给填充上了三道刹车（常量都在 `lib/client.js` 顶部，可自行调）：
+
+| 刹车 | 作用 |
+| --- | --- |
+| `FILL_PAGE_PAUSE_MS = 250` + `FILL_BACKOFF = 3` | 每页之间等一帧再加一段停顿；停顿按上一页的实测耗时成比例放大（上限 `FILL_MAX_PAUSE_MS = 4000`），页面越贵让得越多 |
+| `FILL_NODE_BUDGET = 12000` | 页面 DOM 到这个量就停 —— 填充的产物是一个要开一整天的页面，**结束后的重量**比拉页速度更重要 |
+| 单飞 + 换会话即放弃 | 一个会话只跑一次填充（v0.5.0 是「填完才记账」，于是填充期间的每一次列表通知都会再叠一次同样的填充）；读者切走后立刻停止给旧会话翻页 |
+
+**提前停下不会永久丢链接**：历史是你往后翻时才加载的，而每加载一页都会把那一页的产物索引进词表，所以某一轮一旦出现在屏幕上，它的提及就是链接。预算放弃的只是「读者还没翻到的轮次提前变成链接」。真机验证（点「加载更早」逐页回翻）：节点 13 482 → 15 419 → 17 133 → 19 213，第 3 次点击后出现 7 个提及，点第一个即打开侧边栏并渲染出文件内容。
+
+真正的解法还是那两个方向，**都还没做**：跟滚动懒加载，或者让索引彻底不依赖渲染窗口（索引是 per-turn 的，要做到这一点得改成整日志读取）。现在的取舍是「最近约一千条消息提前可用 + 其余随翻随有」对「打开即静默」。
+
+#### 三、从「静默」改成「有痕迹」
+
+上面两个 bug 有一个共同点：**它们都是静默的**。点不动的时候控制台什么都没有，因为 0.5.0 的 `sidebarOpener` 里写着 `catch {}`；填充把主线程按住的时候也没有任何提示，因为它「只是在工作」。
+
+0.5.1 起，插件对**可降级**的失败会 `console.warn` 一次（每个名字只报一次，靠 `reportOnce` 去重）：边栏拒绝打开时、`openFile` 抛错时、连接重置回滚失败时。点不动仍然可能发生 —— 但下次它会留下一行日志，而不是让你只能靠猜。
 
 ### 修过的问题（v0.4.0）
 
@@ -92,7 +152,7 @@ const turn = context.state.turn;   // ← TypeError: Cannot read properties of u
 const HISTORY_AUTOFILL_ENABLED = true;
 ```
 
-**代价要说清楚**：打开一个会话最多会拉 60 页 × 50 条。对超大日志是实打实的开销。正确的解法有两个方向，**都还没做**：跟滚动懒加载，或者让索引不再依赖窗口（现在索引是 per-turn 的，要做到「不看窗口」得改成整日志读取）。这个开关目前就是「历史链接能用」和「打开更省」之间的取舍。
+**代价要说清楚**：打开一个会话最多会拉 60 页 × 50 条。对超大日志是实打实的开销 —— v0.5.0 就是因为不喘气地拉页而把主线程按住了几秒（实测数据见下面 v0.5.1 那一节）。v0.5.1 之后这条路径有了三道刹车：**页间停顿**（按上一页实测耗时成比例放大）、**DOM 预算**（`FILL_NODE_BUDGET`，到量即停）、**单飞 + 切走即放弃**。正确的解法还是那两个方向，**都还没做**：跟滚动懒加载，或者让索引不再依赖窗口（现在索引是 per-turn 的，要做到「不看窗口」得改成整日志读取）。`HISTORY_AUTOFILL_ENABLED` 仍是「历史链接能用」和「打开更省」之间的总开关。
 
 #### 三、同一个症状的另一个已知来源
 
@@ -249,11 +309,13 @@ DSH 从 0.1.5-rc.2 起带了一批侧边栏插件（`dsh-client-ui-sidebar`、`-
 - **提示词是引导，不是强制。** agent 仍可能只写文件名（现在没问题，词表更宽了），也可能干脆不提（这个无解）。
 - **工作区相对路径按当前 session 工作区拼接。** 只有在工具自己打印了相对路径时才会这样，此时它本来就是相对工作区说的；换个 session 打开旧轮次时，工作区根可能已经不是当初那个，链接就会落空。
 - **点击时不做存在性校验。** 可能存在假阳性（例如某次读取的文件被当成产物），这时 Host 会报打开失败，而不是静默打开别的文件。
-- **历史自动填充必须开着**，否则超出第一页的历史链接会静默失效 —— 见上文专节。它可以用 `lib/client.js` 里的 `HISTORY_AUTOFILL_ENABLED` 关掉，但要接受那个代价。
+- **历史自动填充必须开着**，否则超出第一页的历史链接会静默失效 —— 见上文专节。它可以用 `lib/client.js` 里的 `HISTORY_AUTOFILL_ENABLED` 关掉，但要接受那个代价。填充的另外三个常量（`FILL_PAGE_PAUSE_MS`、`FILL_BACKOFF`、`FILL_NODE_BUDGET`）控制它的**脾气**：停顿越长越不打扰，预算越大预热的滚动条越长。
+- **超过 DOM 预算的历史不会「提前」变蓝。** 自动填充到量即停；再往前的提及要等你往后翻到那一页才会成为链接（翻页本身就会建立索引）。真机验证过这条路径。
 - **客户端 bundle 与 Host 半部的加载时机不同。** Host 半部只在 `dsh web` 启动时加载，改了它必须重启；客户端 bundle 每次页面加载都从磁盘现读，改它刷新即可。**面板上已有的会话不受影响，要新开一轮或重开会话才看得到变化。**
 
 ## 版本记录
 
+- **v0.5.1** — 修两个真机报回来的症状：**(1) 蓝字点不动** —— `ctx.sidebarRight` 在 cordis 的 Context Proxy 上不是 `undefined` 而是**抛异常**（未在 `inject` 声明的属性，读取即抛），点击死在 `sidebarOpener` 里；同类问题还有 `ctx.off?.(...)`，让每次连接重置的回滚都抛。两者都改用 `ctx.get(name)` / `ctx.on()` 返回的 disposer。**(2) 整个 DSH 很卡** —— 历史填充原来不喘气地连拉 60 页，实测填充期间每 2.5 秒有约 2.2 秒占着主线程；现在改成页间停顿（按实测耗时成比例退避）、`FILL_NODE_BUDGET` 预算封顶、单飞且切走即放弃（实测同窗口阻塞降到 0.2–0.7 秒，随后归零）。另外把「静默失败」改成「兜底 + 每个名字只 warn 一次」。测试从 24 项加到 32 项，新增 `guardedContext()`（按真实 Proxy 语义读未声明属性即抛）。
 - **v0.5.0** — 侧边栏文件标签右键菜单加两项（用默认软件打开 / 打开文件所在路径），并把解析优先级反转，使所有被索引到的提及一律先进侧边栏，而不是弹外部程序。同时修掉包裹 `chatFileMentions` 依赖加载顺序的问题（服务晚注册时改为事件驱动补装，不再只依赖 apply 那一刻）。真机验证：在 Chrome 页面内调用菜单组件，两项渲染正确、两个动作分别发出 `{path}` 与 `{path, action:"reveal"}`。
 - **v0.4.2** — 重新开启历史自动填充。v0.4.0/v0.4.1 关闭它是误判：那段时间「老对话里文件不再变蓝」正是关掉它造成的（证据在 50 条窗口之外，插件看不见）。当时归因的「对话空白」真因是 `state` 崩溃，已修。真浏览器实测：50 轮会话 743 个行内代码块正常渲染、33 个提及成链、零异常。
 - **v0.4.0** — 修掉「对话区空白」的真根因：产物定义在 `state` 未播种时崩溃（窗口从 turn 中间开始时发生），打断了会话事件流，导致整个对话区渲染为空。新增 `test/regression-probe.mjs`，它会剥离守卫来证明回归测试本身有效。（同一版**错误地**关闭了历史填充，v0.4.2 已纠正。）
@@ -273,9 +335,9 @@ DSH 从 0.1.5-rc.2 起带了一批侧边栏插件（`dsh-client-ui-sidebar`、`-
 ## 自测
 
 ```bash
-npm test                      # 等于下面两条
+npm test                      # 等于下面三条
 node test/host.mjs            #  5 项：Host 半部的 section 名字/顺序/内容、status 服务、版本一致
-node test/harness.mjs         # 24 项：客户端 bundle 的契约、证据规则、匹配优先级、侧边栏地址、autofill
+node test/harness.mjs         # 32 项：客户端 bundle 的契约、证据规则、匹配优先级、侧边栏地址、autofill 节奏、cordis Proxy 守卫
 node test/autofill-off.mjs    #  3 项：历史填充必须在启动时接上（关掉它会让历史链接静默失效）
 ```
 
@@ -292,9 +354,15 @@ node test/diagnose.mjs   # 按轮次列出真实 session 会列出哪些路径�
 ```bash
 node test/browser-menu.mjs "<带 token 的地址>"    # 在真实页面里调用右键菜单组件，打印菜单项与两个动作的实际远程调用
 node test/browser-shot.mjs "<地址>" "<会话标题>" out.png   # 打开会话、截图、转储行内代码与提及数量
+node test/live-mention.mjs "<地址>" "<会话标题>" [out.png]  # 打开会话、测填充的 longtask 与 DOM 重量、翻页直到出现提及、点第一个、报告侧边栏内容
+node test/live-chip.mjs    "<地址>" "<会话标题>" [out.png]  # 同上，但点的是「脚本产物」那一行的 chip
+node test/live-older.mjs   "<地址>" "<会话标题>"            # 单独检查「加载更早」控件本身（元素、坐标、点击后节点数）
+node test/live-recon.mjs   "<地址>" [out.png]               # 只做侦察：首屏节点数、longtask 台账、页面全局对象、控制台
 ```
 
-这两个脚本用 `test/cdp.mjs` 直接走 Chrome DevTools 协议（不需要装 puppeteer）。**这不是洁癖**：这个插件曾经在离线测试全绿的情况下把线上功能弄坏 —— 包裹时机依赖加载顺序、菜单没在真机点过。能点一遍就别只跑单测。
+这几个脚本用 `test/cdp.mjs` 直接走 Chrome DevTools 协议（不需要装 puppeteer）。**这不是洁癖**：这个插件曾经在离线测试全绿的情况下把线上功能弄坏 —— 包裹时机依赖加载顺序、菜单没在真机点过、`ctx.sidebarRight` 在真机上抛异常而离线 fake 上返回 `undefined`。能点一遍就别只跑单测。
+
+真机脚本要一个**带 token 的地址**（`dsh web` 启动时会打印）。想在不打扰正在用的那个服务的前提下测，可以复制一个 profile 做实验：把 `~/.dsh/profiles/web` 的 `package.json`、`cordis.yml`、`cordis.patch.yml` 拷到 `~/.dsh/profiles/webtest`，用目录联接（`mklink /J`）共享 `node_modules`，然后 `dsh --profile webtest --no-open --port 3081` —— 会话数据在 `$DSH_HOME` 下是共享的，所以实验对象就是真实会话。
 
 `test/harness.mjs` 自带一个 `window.__ModuleLoader__` 接收器、一张只含 `react` 的模块表和一个假 ctx，所以能在没有浏览器、没有 dsh 服务的情况下跑客户端 bundle 本身 —— 包括那个真实线形的嵌套结果块。
 
@@ -319,7 +387,9 @@ test/                 自测与诊断脚本
 <a id="english"></a>
 ## English
 
-**What it does.** In the DeepSeek Harness Web GUI, a file name written as Markdown inline code becomes a clickable link — but the shipped vocabulary comes only from successful `write` / `edit` / mutating `str_replace_editor` calls. A file that only a terminal command produced (a `.pptx` from python-pptx, a `.png` chart, an `.mp4` render) can never be linked, no matter how it is spelled. This plugin supplies that missing vocabulary instead of patching the shipped one: it indexes the paths that appeared in the current turn's tool calls and tool results and appends a second resolver to the `chatFileMentions` service, so the shipped vocabulary stays authoritative and only inert tokens get answered. It also adds a "script artifacts" row at the end of a turn, and — unrelatedly — fills a session's history window on open.
+**What it does.** In the DeepSeek Harness Web GUI, a file name written as Markdown inline code becomes a clickable link — but the shipped vocabulary comes only from successful `write` / `edit` / mutating `str_replace_editor` calls. A file that only a terminal command produced (a `.pptx` from python-pptx, a `.png` chart, an `.mp4` render) can never be linked, no matter how it is spelled. This plugin supplies that missing vocabulary instead of patching the shipped one: it indexes the paths that appeared in the current turn's tool calls and tool results and appends a second resolver to the `chatFileMentions` service, so the shipped vocabulary stays authoritative and only inert tokens get answered. It also adds a "script artifacts" row at the end of a turn, adds two native actions to the right Sidebar's file-tab menu, routes every link it answers into that Sidebar, and — unrelatedly — fills a session's history window on open.
+
+**0.5.1 fixes two reported bugs.** *Dead links:* reading `ctx.sidebarRight` on a cordis client context does not return `undefined`, it **throws** (`cannot get property "sidebarRight" without inject`) because the service is not in this plugin's `inject` — and it throws on the property read, so `?.` and `try` in the caller are no help. Every click died inside `sidebarOpener`. `ctx.off?.(...)` had the same shape and made every connection reset throw out of the mention wrapper's rollback. Both now go through `ctx.get(name)` and the disposer `ctx.on()` returns. *Slowness:* the history fill used to pull up to 60 pages back to back — measured in a real browser, ~2.2 s of every 2.5 s window was a long task for about seven seconds, leaving a 34.6k-node page behind. It is now paced between pages (backing off in proportion to what the last page cost), capped by a DOM budget, single-flight, and abandoned when the reader switches sessions; the same measurement is now 0.2–0.7 s per window and then zero. Deferred history still links as you page back to it, because every page indexed feeds the vocabulary.
 
 **Install.**
 
@@ -337,6 +407,6 @@ Then add `"dsh-turn-artifacts"` to `dsh.profile.bundles` in `~/.dsh/profiles/web
 
 **Limits.** Per-turn only; a path must have appeared in tool output; the guidance is an instruction, not a guarantee; workspace-relative paths resolve against the current session workspace; no existence check at click time.
 
-**Tests.** `npm test` runs the Host half (`test/host.mjs`, 5 checks) and the client bundle (`test/harness.mjs`, 19 checks) with no browser and no running harness. `test/probe.mjs`, `test/realdata.mjs`, and `test/diagnose.mjs` are development diagnostics over real session logs.
+**Tests.** `npm test` runs the Host half (`test/host.mjs`, 5 checks), the autofill wiring (`test/autofill-off.mjs`, 3 checks) and the client bundle (`test/harness.mjs`, 32 checks) with no browser and no running harness. The harness wraps a fake context in `guardedContext()`, a Proxy that reproduces the real "cannot get property without inject" throw, because a plain fake object returns `undefined` and hides exactly the bug that shipped. `test/probe.mjs`, `test/realdata.mjs`, and `test/diagnose.mjs` are development diagnostics over real session logs; `test/live-*.mjs` drive a real Chrome against a running `dsh web`.
 
 MIT licensed.
